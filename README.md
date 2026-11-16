@@ -1,6 +1,8 @@
 # RAB Mini
 
-**Versi rilis: v1.0.0.** Panduan backup, cleanup, dan deployment ada di
+**Versi rilis: v1.0.1.** Catatan rilis ada di
+[`docs/release-v1.0.1.md`](docs/release-v1.0.1.md). Panduan backup, cleanup,
+dan deployment database v1.0.0 tetap tersedia di
 [`docs/release-v1.0.0.md`](docs/release-v1.0.0.md).
 
 Aplikasi web untuk membantu kontraktor dan arsitek menyusun serta mengelola
@@ -54,6 +56,12 @@ server dan hard-refresh halaman. Komponen
 [`BrandMark`](src/components/layout/brand-mark.tsx) adalah satu-satunya tempat
 import logo; tidak ada kotak putih, teks “RAB Mini”, atau `object-cover`.
 Varian dipilih lewat `data-theme`, jadi tidak perlu filter/invert.
+
+Favicon aplikasi memakai aset arrow yang sama:
+`src/app/icon.png` (256×256, transparan) dan `src/app/favicon.ico` (16–256 px).
+Favicon bawaan Next.js sudah dihapus, jadi tab browser menampilkan arrow
+Astaworks. Jika masih terlihat ikon lama, lakukan hard refresh/incognito karena
+browser menyimpan favicon di cache.
 
 ## Tema
 
@@ -151,7 +159,7 @@ auth.users ──1:1──▶ projects.user_id
 | `/catalog`        | Katalog harga: material/pekerjaan, kategori, satuan, harga satuan       |
 | `/ahsp`           | Analisis harga satuan pekerjaan: daftar analisis + pencarian/filter     |
 | `/ahsp/[id]`      | Editor AHSP: komponen material/tenaga kerja/peralatan + total           |
-| `/settings`       | Informasi perusahaan, profil pengguna, preferensi mata uang (statis)     |
+| `/settings`       | Profil pengguna, identitas perusahaan (opsional), tema tampilan          |
 
 ## Katalog Harga
 
@@ -263,7 +271,8 @@ PDF A4 siap cetak.
 - **Library:** [`jspdf`](https://github.com/parallax/jsPDF) +
   [`jspdf-autotable`](https://github.com/simonbengtsson/jsPDF-AutoTable), dimuat
   dinamis (`import()`) sehingga tidak masuk ke bundel utama.
-- **Isi dokumen:** kop perusahaan, judul "RENCANA ANGGARAN BIAYA", nama proyek,
+- **Isi dokumen:** kop identitas perusahaan (opsional; baris nama/kontak yang
+  kosong tidak dicetak), judul "RENCANA ANGGARAN BIAYA", nama proyek,
   klien, lokasi, nomor & tanggal dokumen, tabel item (No., Uraian, Volume,
   Satuan, Harga Satuan, Jumlah Harga), rekapitulasi total, dan blok tanda
   tangan tiga kolom.
@@ -395,10 +404,12 @@ node scripts/smoke-auth-rls.mjs
   render server; gunakan hook `useNow()` untuk waktu relatif.
 - **Metadata halaman detail** bersifat statis karena judul proyek/dokumen hanya
   diketahui klien setelah data dimuat.
-- **Ekspor Excel belum tersedia**; ekspor PDF sudah berfungsi (lihat bagian
-  Ekspor PDF).
-- **Profil perusahaan** (`src/lib/profile.ts`) dan form Settings masih statis;
-  belum ada tabel profil di database.
+- **Ekspor Excel** tersedia dari editor/daftar RAB; PDF dan Excel memakai
+  perhitungan yang sama.
+- **Profil pengguna dan identitas perusahaan** disimpan di `user_metadata`
+  Supabase Auth (`full_name`, `company`); tidak ada tabel profil terpisah.
+  Identitas perusahaan bersifat opsional dan default-nya kosong, jadi aplikasi
+  tidak pernah menampilkan contoh perusahaan sebagai data pengguna.
 - **Data lama tanpa pemilik** (`user_id IS NULL`) tidak terlihat oleh pengguna
   mana pun setelah migration 0002. File migration memuat perintah opsional
   (dikomentari) untuk menghapus atau mengklaimnya.

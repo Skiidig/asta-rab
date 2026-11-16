@@ -1,6 +1,10 @@
 import { calculateItemAmount, calculateRabTotal } from "./rab-calc";
 import { formatDate } from "./format";
-import { companyProfile, type CompanyProfile } from "./profile";
+import {
+  companyContactLine,
+  companyProfile,
+  type CompanyProfile,
+} from "./profile";
 import { buildDisplayRows } from "./rab-hierarchy";
 import type { RabDocumentDetail, RabWorkItem } from "../types";
 
@@ -14,8 +18,6 @@ import type { RabDocumentDetail, RabWorkItem } from "../types";
  * aplikasi dan tidak ada risiko subtotal bertingkat terhitung dua kali.
  */
 
-const HEADER_ROW = 9;
-const FIRST_TABLE_ROW = HEADER_ROW + 1;
 const SHEET_NAME = "RAB";
 
 const COLOR = {
@@ -156,6 +158,77 @@ type TableRow =
   | { kind: "subtotal"; level: 0 | 1 | 2; label: string; amount: number }
   | { kind: "grand_total"; label: string; amount: number };
 
+export interface RabExcelHeaderLayout {
+  /** Baris kop sampai header tabel (belum termasuk data). */
+  rows: unknown[][];
+  titleRow: number;
+  nameRow: number | null;
+  contactRow: number | null;
+  projectRow: number;
+  clientRow: number;
+  locationRow: number;
+  /** Baris header tabel (1-based). */
+  headerRow: number;
+  /** Baris pertama data setelah header tabel. */
+  firstTableRow: number;
+}
+
+/**
+ * Susun kop Excel dari identitas yang benar-benar diisi pengguna.
+ *
+ * Baris nama/kontak yang kosong tidak ditulis sama sekali sehingga tidak ada
+ * baris kosong atau pemisah `·` menggantung. Posisi header tabel dihitung dari
+ * jumlah baris aktual agar style, merge, freeze pane, dan formula tetap tepat.
+ */
+export function buildRabExcelHeader(
+  detail: RabDocumentDetail,
+  profile: CompanyProfile,
+): RabExcelHeaderLayout {
+  const name = profile.name.trim();
+  const contact = companyContactLine(profile);
+  const rows: unknown[][] = [["RENCANA ANGGARAN BIAYA"]];
+
+  const nameRow = name ? rows.push([name]) : null;
+  const contactRow = contact ? rows.push([contact]) : null;
+  rows.push([]);
+  const projectRow = rows.push([
+    "Proyek",
+    detail.projectName,
+    "",
+    "No. Dokumen",
+    detail.number,
+  ]);
+  const clientRow = rows.push([
+    "Klien",
+    detail.client || "—",
+    "",
+    "Tanggal",
+    formatDate(detail.date || detail.createdAt),
+  ]);
+  const locationRow = rows.push(["Lokasi", detail.location || "—"]);
+  rows.push([]);
+  rows.push([
+    "No",
+    "Uraian Pekerjaan",
+    "Volume",
+    "Satuan",
+    "Harga Satuan",
+    "Jumlah Harga",
+  ]);
+
+  return {
+    rows,
+    titleRow: 1,
+    nameRow,
+    contactRow,
+    projectRow,
+    clientRow,
+    locationRow,
+    headerRow: rows.length,
+    firstTableRow: rows.length + 1,
+  };
+}
+
 /**
  * Susun workbook RAB.
  *
@@ -167,6 +240,10 @@ export async function buildRabWorkbook(
   profile: CompanyProfile = companyProfile,
 ): Promise<Record<string, unknown>> {
   const XLSX = await loadXlsx();
+
+  const header = buildRabExcelHeader(detail, profile);
+  const headerRow = header.headerRow;
+  const firstTableRow = header.firstTableRow;
 
   const total = calculateRabTotal(detail.items);
   const displayRows = buildDisplayRows(detail.items);
@@ -198,7 +275,7 @@ export async function buildRabWorkbook(
   const scopes: { level: number; items: number[] }[] = [];
 
   table.forEach((row, index) => {
-    const excelRow = FIRST_TABLE_ROW + index;
+    const excelRow = firstTableRow + index;
 
     if (row.kind === "heading") {
       while (scopes.length > 0 && scopes[scopes.length - 1].level >= row.level) {
@@ -225,30 +302,7 @@ export async function buildRabWorkbook(
 
   const grandTotalRows = itemRanges(allItemRows);
 
-  const headerRows: unknown[][] = [
-    ["RENCANA ANGGARAN BIAYA"],
-    [profile.name],
-    [`${profile.phone}  ·  ${profile.email}`],
-    [],
-    ["Proyek", detail.projectName, "", "No. Dokumen", detail.number],
-    [
-      "Klien",
-      detail.client || "—",
-      "",
-      "Tanggal",
-      formatDate(detail.date || detail.createdAt),
-    ],
-    ["Lokasi", detail.location || "—"],
-    [],
-    [
-      "No",
-      "Uraian Pekerjaan",
-      "Volume",
-      "Satuan",
-      "Harga Satuan",
-      "Jumlah Harga",
-    ],
-  ];
+  const headerRows = header.rows;
 
   const rows: unknown[][] = [...headerRows];
 
@@ -294,21 +348,41 @@ export async function buildRabWorkbook(
     font: { bold: true, sz: 15, color: { rgb: COLOR.navy } },
     alignment: { horizontal: "center", vertical: "center" },
   });
-  styleCell(sheet, "A2", { font: { bold: true, sz: 11, color: { rgb: COLOR.text } } });
-  styleCell(sheet, "A3", { font: { sz: 9, color: { rgb: COLOR.muted } } });
+  if (header.nameRow) {
+    styleCell(sheet, `A${header.nameRow}`, {
+      font: { bold: true, sz: 11, color: { rgb: COLOR.text } },
+    });
+  }
+  if (header.contactRow) {
+    styleCell(sheet, `A${header.contactRow}`, {
+      font: { sz: 9, color: { rgb: COLOR.muted } },
+    });
+  }
 
-  for (const address of ["A5", "D5", "A6", "D6", "A7"]) {
+  for (const address of [
+    `A${header.projectRow}`,
+    `D${header.projectRow}`,
+    `A${header.clientRow}`,
+    `D${header.clientRow}`,
+    `A${header.locationRow}`,
+  ]) {
     styleCell(sheet, address, {
       font: { bold: true, sz: 10, color: { rgb: COLOR.muted } },
     });
   }
-  for (const address of ["B5", "B6", "B7", "E5", "E6"]) {
+  for (const address of [
+    `B${header.projectRow}`,
+    `B${header.clientRow}`,
+    `B${header.locationRow}`,
+    `E${header.projectRow}`,
+    `E${header.clientRow}`,
+  ]) {
     styleCell(sheet, address, { font: { sz: 10, color: { rgb: COLOR.text } } });
   }
 
   /* --- Header tabel ------------------------------------------------------ */
   for (const column of ["A", "B", "C", "D", "E", "F"]) {
-    styleCell(sheet, `${column}${HEADER_ROW}`, {
+    styleCell(sheet, `${column}${headerRow}`, {
       font: { bold: true, sz: 10, color: { rgb: COLOR.white } },
       fill: { patternType: "solid", fgColor: { rgb: COLOR.navy } },
       border: bodyBorder,
@@ -321,23 +395,32 @@ export async function buildRabWorkbook(
   }
 
   /* --- Baris tabel ------------------------------------------------------- */
-  const merges: { s: { r: number; c: number }; e: { r: number; c: number } }[] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 5 } },
-    { s: { r: 1, c: 0 }, e: { r: 1, c: 5 } },
-    { s: { r: 2, c: 0 }, e: { r: 2, c: 5 } },
-    { s: { r: 4, c: 1 }, e: { r: 4, c: 2 } },
-    { s: { r: 4, c: 4 }, e: { r: 4, c: 5 } },
-    { s: { r: 5, c: 1 }, e: { r: 5, c: 2 } },
-    { s: { r: 5, c: 4 }, e: { r: 5, c: 5 } },
-    { s: { r: 6, c: 1 }, e: { r: 6, c: 5 } },
-  ];
+  const merges: { s: { r: number; c: number }; e: { r: number; c: number } }[] = [];
+  const mergeFullRow = (row: number) => {
+    merges.push({ s: { r: row - 1, c: 0 }, e: { r: row - 1, c: 5 } });
+  };
 
-  const rowHeights: { hpt?: number }[] = Array.from({ length: 9 }, () => ({}));
+  mergeFullRow(header.titleRow);
+  if (header.nameRow) mergeFullRow(header.nameRow);
+  if (header.contactRow) mergeFullRow(header.contactRow);
+  for (const row of [header.projectRow, header.clientRow]) {
+    merges.push({ s: { r: row - 1, c: 1 }, e: { r: row - 1, c: 2 } });
+    merges.push({ s: { r: row - 1, c: 4 }, e: { r: row - 1, c: 5 } });
+  }
+  merges.push({
+    s: { r: header.locationRow - 1, c: 1 },
+    e: { r: header.locationRow - 1, c: 5 },
+  });
+
+  const rowHeights: { hpt?: number }[] = Array.from(
+    { length: headerRow },
+    () => ({}),
+  );
   rowHeights[0] = { hpt: 24 };
-  rowHeights[HEADER_ROW - 1] = { hpt: 26 };
+  rowHeights[headerRow - 1] = { hpt: 26 };
 
   table.forEach((row, index) => {
-    const excelRow = FIRST_TABLE_ROW + index;
+    const excelRow = firstTableRow + index;
     const rowIndex = excelRow - 1;
 
     if (row.kind === "heading") {
@@ -667,11 +750,12 @@ export async function rabExcelBuffer(
 ): Promise<ArrayBuffer> {
   const XLSX = await loadXlsx();
   const workbook = await buildRabWorkbook(detail, profile);
+  const header = buildRabExcelHeader(detail, profile);
 
   const raw = XLSX.write(workbook, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
   return applySheetSetup(raw, {
     sheetName: SHEET_NAME,
-    headerRow: HEADER_ROW,
-    firstTableRow: FIRST_TABLE_ROW,
+    headerRow: header.headerRow,
+    firstTableRow: header.firstTableRow,
   });
 }

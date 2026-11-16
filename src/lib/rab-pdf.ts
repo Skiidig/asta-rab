@@ -11,7 +11,11 @@
  * bundel utama.
  */
 
-import { companyProfile, type CompanyProfile } from "./profile";
+import {
+  companyContactLine,
+  companyProfile,
+  type CompanyProfile,
+} from "./profile";
 import { calculateItemAmount, calculateRabTotal } from "./rab-calc";
 import { buildDisplayRows } from "./rab-hierarchy";
 import { formatVolumeForDisplay } from "./volume-format";
@@ -248,20 +252,37 @@ export interface RabPdfOptions {
 /*  Penggambar bagian dokumen                                                 */
 /* -------------------------------------------------------------------------- */
 
-function drawCompanyIdentity(doc: PdfDocument, profile: CompanyProfile) {
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(10.5);
-  doc.setTextColor(INK.r, INK.g, INK.b);
-  doc.text(profile.name, MARGIN.left, MARGIN.top + 2);
+/**
+ * Kop identitas perusahaan. Mengembalikan Y dasar baris terakhir yang digambar
+ * (atau Y awal bila identitas kosong) agar tinggi kop mengikuti isinya.
+ *
+ * Tidak ada nilai contoh atau email akun yang ditambahkan di sini: hanya nilai
+ * yang benar-benar tersimpan pada profil perusahaan pengguna.
+ */
+function drawCompanyIdentity(doc: PdfDocument, profile: CompanyProfile): number {
+  const name = profile.name.trim();
+  const contact = companyContactLine(profile);
+  let y = MARGIN.top + 2;
 
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(7.8);
-  doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
-  doc.text(
-    `${profile.phone}  ·  ${profile.email}`,
-    MARGIN.left,
-    MARGIN.top + 14,
-  );
+  if (!name && !contact) return y;
+
+  if (name) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10.5);
+    doc.setTextColor(INK.r, INK.g, INK.b);
+    doc.text(name, MARGIN.left, y);
+    y += 14;
+  }
+
+  if (contact) {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.8);
+    doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
+    doc.text(contact, MARGIN.left, y);
+    y += 11;
+  }
+
+  return y;
 }
 
 /** Kop dokumen pada halaman pertama. Mengembalikan Y awal tabel. */
@@ -270,7 +291,7 @@ function drawDocumentHeader(
   detail: RabDocumentDetail,
   profile: CompanyProfile,
 ) {
-  drawCompanyIdentity(doc, profile);
+  const identityBottom = drawCompanyIdentity(doc, profile);
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
@@ -279,7 +300,9 @@ function drawDocumentHeader(
     align: "right",
   });
 
-  let y = MARGIN.top + 40;
+  // Kop lengkap tetap memakai jarak lama; kop kosong/sebagian tidak
+  // menyisakan ruang kosong berlebih di atas judul.
+  let y = Math.max(MARGIN.top + 28, identityBottom + 12);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(15);
@@ -413,11 +436,12 @@ function drawFooter(
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.5);
   doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
-  doc.text(
-    `${profile.name}  ·  Dibuat dengan RAB Mini`,
-    MARGIN.left,
-    y,
-  );
+  // Branding aplikasi selalu tampil; identitas perusahaan hanya ditambahkan
+  // bila diisi, tanpa pemisah menggantung.
+  const footerText = [profile.name.trim(), "Dibuat dengan RAB Mini"]
+    .filter(Boolean)
+    .join("  ·  ");
+  doc.text(footerText, MARGIN.left, y);
   doc.text(`Halaman ${page} dari ${totalPages}`, PAGE_WIDTH - MARGIN.right, y, {
     align: "right",
   });
@@ -764,7 +788,7 @@ export async function buildRabPdf(
   doc.setProperties({
     title: `RAB ${detail.projectName}`.trim(),
     subject: detail.title,
-    author: profile.name,
+    author: profile.name.trim() || "RAB Mini",
     creator: "RAB Mini",
   });
 

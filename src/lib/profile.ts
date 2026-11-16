@@ -20,13 +20,17 @@ export interface CompanyProfile {
 
 /**
  * Nilai awal ketika pengguna belum pernah menyimpan identitas perusahaan.
+ *
+ * Semua kolom identitas sengaja kosong: aplikasi tidak boleh mengarang nama,
+ * alamat, telepon, atau email perusahaan. Contoh pengisian hanya muncul sebagai
+ * placeholder di halaman Pengaturan dan tidak pernah menjadi nilai formulir.
  * Nilai tersimpan di metadata selalu menang; default ini hanya fallback.
  */
 export const companyProfile: CompanyProfile = {
-  name: "Mitra Konstruksi Nusantara",
-  address: "Jl. Tebet Raya No. 42, Tebet, Jakarta Selatan 12810",
-  phone: "+62 21 8370 4512",
-  email: "admin@mitrakonstruksi.co.id",
+  name: "",
+  address: "",
+  phone: "",
+  email: "",
   currency: "IDR",
 };
 
@@ -49,6 +53,29 @@ function textOr(value: unknown, fallback: string): string {
   // String tersimpan dipakai apa adanya, termasuk string kosong: pengguna yang
   // sengaja mengosongkan alamat/telepon tidak boleh diisi ulang dengan contoh.
   return typeof value === "string" ? value : fallback;
+}
+
+/** `true` bila setidaknya satu kolom identitas perusahaan terisi. */
+export function hasCompanyIdentity(profile: CompanyProfile): boolean {
+  return Boolean(
+    profile.name.trim() ||
+      profile.address.trim() ||
+      profile.phone.trim() ||
+      profile.email.trim(),
+  );
+}
+
+/**
+ * Baris kontak kop: hanya nilai yang terisi, tanpa pemisah menggantung.
+ * Dipakai PDF, Excel, dan pratinjau agar ketiganya konsisten.
+ */
+export function companyContactLine(
+  profile: Pick<CompanyProfile, "phone" | "email">,
+): string {
+  return [profile.phone, profile.email]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join("  ·  ");
 }
 
 /** Nama tampilan: metadata `full_name`, lalu email, lalu "Pengguna". */

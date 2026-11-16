@@ -16,7 +16,11 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { toErrorMessage } from "@/lib/errors";
 import { getInitials } from "@/lib/format";
-import type { CompanyProfile } from "@/lib/profile";
+import {
+  companyContactLine,
+  hasCompanyIdentity,
+  type CompanyProfile,
+} from "@/lib/profile";
 import { cn } from "@/lib/utils";
 
 const sections = [
@@ -91,9 +95,6 @@ export function SettingsView() {
 
   const nameError =
     trimmedName.length < 2 ? "Nama tampilan minimal 2 karakter." : null;
-  const companyNameError = normalizedCompany.name
-    ? null
-    : "Nama perusahaan wajib diisi.";
   const companyEmailError =
     normalizedCompany.email && !EMAIL_PATTERN.test(normalizedCompany.email)
       ? "Format email perusahaan tidak valid."
@@ -103,9 +104,10 @@ export function SettingsView() {
       ? "Nomor telepon tidak valid."
       : null;
 
-  const valid =
-    !nameError && !companyNameError && !companyEmailError && !companyPhoneError;
+  const valid = !nameError && !companyEmailError && !companyPhoneError;
   const canSave = dirty && valid && !saving;
+  const companyContact = companyContactLine(normalizedCompany);
+  const companyFilled = hasCompanyIdentity(normalizedCompany);
 
   function setCompanyField<K extends keyof CompanyProfile>(
     field: K,
@@ -264,24 +266,51 @@ export function SettingsView() {
                 <CardTitle>Identitas Perusahaan</CardTitle>
                 <p className="mt-0.5 text-[13px] text-muted-foreground">
                   Dipakai pada kop PDF dan Excel saat dokumen diekspor.
+                  Kosongkan kolom yang tidak ingin ditampilkan.
                 </p>
               </div>
             </CardHeader>
             <CardContent className="space-y-5 pt-0">
-              <div className="flex flex-wrap items-center gap-4 rounded-lg border border-border bg-background/50 p-3">
-                <BrandMark variant="full" width={200} />
-                <div className="min-w-0">
-                  <p className="text-sm font-medium break-words text-foreground">
-                    {normalizedCompany.name || "Nama perusahaan"}
+              <div className="rounded-lg border border-border bg-background/50 p-3">
+                <p className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">
+                  Pratinjau kop dokumen
+                </p>
+                <div className="mt-3 min-w-0 space-y-0.5">
+                  {companyFilled ? (
+                    <>
+                      {normalizedCompany.name ? (
+                        <p className="text-sm font-semibold break-words text-foreground">
+                          {normalizedCompany.name}
+                        </p>
+                      ) : null}
+                      {normalizedCompany.address ? (
+                        <p className="text-xs leading-relaxed break-words whitespace-pre-line text-muted-foreground">
+                          {normalizedCompany.address}
+                        </p>
+                      ) : null}
+                      {companyContact ? (
+                        <p className="text-xs break-words text-muted-foreground">
+                          {companyContact}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      Belum ada identitas perusahaan. Kop dokumen hanya memuat
+                      judul dan informasi proyek.
+                    </p>
+                  )}
+                </div>
+                <div className="mt-3 border-t border-border pt-2">
+                  <p className="text-[10px] font-medium tracking-wide text-muted-foreground">
+                    RENCANA ANGGARAN BIAYA
                   </p>
-                  <p className="text-xs break-words text-muted-foreground">
-                    {normalizedCompany.address || "Alamat belum diisi"}
-                  </p>
-                  <p className="mt-0.5 text-xs break-words text-muted-foreground">
-                    {[normalizedCompany.phone, normalizedCompany.email]
-                      .filter(Boolean)
-                      .join(" · ") || "Telepon/email belum diisi"}
-                  </p>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2">
+                  <span className="text-[10px] tracking-[0.08em] text-muted-foreground uppercase">
+                    Branding aplikasi
+                  </span>
+                  <BrandMark variant="wordmark" width={96} />
                 </div>
               </div>
 
@@ -294,20 +323,20 @@ export function SettingsView() {
                     id="company-name"
                     name="companyName"
                     autoComplete="organization"
+                    placeholder="Contoh: Mitra Konstruksi Nusantara"
                     value={company.name}
                     onChange={(event) =>
                       setCompanyField("name", event.target.value)
                     }
-                    aria-invalid={Boolean(companyNameError)}
-                    aria-describedby={
-                      companyNameError ? "company-name-error" : undefined
-                    }
+                    aria-describedby="company-name-note"
                   />
-                  {companyNameError ? (
-                    <p id="company-name-error" className="text-xs text-danger">
-                      {companyNameError}
-                    </p>
-                  ) : null}
+                  <p
+                    id="company-name-note"
+                    className="text-xs text-muted-foreground"
+                  >
+                    Opsional. Kosongkan bila dokumen tidak perlu memuat nama
+                    perusahaan.
+                  </p>
                 </div>
                 <div className="grid gap-1.5 sm:col-span-2">
                   <Label htmlFor="company-address">Alamat</Label>
@@ -315,6 +344,7 @@ export function SettingsView() {
                     id="company-address"
                     name="address"
                     autoComplete="street-address"
+                    placeholder="Contoh: Jl. Tebet Raya No. 42, Tebet, Jakarta Selatan 12810"
                     value={company.address}
                     onChange={(event) =>
                       setCompanyField("address", event.target.value)
@@ -329,6 +359,7 @@ export function SettingsView() {
                     name="phone"
                     type="tel"
                     autoComplete="tel"
+                    placeholder="Contoh: +62 21 8370 4512"
                     value={company.phone}
                     onChange={(event) =>
                       setCompanyField("phone", event.target.value)
@@ -350,7 +381,8 @@ export function SettingsView() {
                     id="company-email"
                     name="email"
                     type="email"
-                    autoComplete="email"
+                    autoComplete="off"
+                    placeholder="Contoh: admin@mitrakonstruksi.co.id"
                     value={company.email}
                     onChange={(event) =>
                       setCompanyField("email", event.target.value)

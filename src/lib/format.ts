@@ -118,7 +118,7 @@ export function formatRelativeTime(value: string | Date, now = new Date()) {
   return formatDate(date);
 }
 
-/** `Mitra Konstruksi Nusantara` → `MK` */
+/** `Astaworks Nusantara` → `AN` */
 export function getInitials(name: string) {  return name
     .split(/\s+/)
     .filter(Boolean)
