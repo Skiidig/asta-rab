@@ -1,0 +1,171 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * RAB Mini design tokens — Astaworks.
+ *
+ * Terang: Light Cream + Royal Blue. Gelap: navy surface dengan aksen biru
+ * terang. Semua komponen memakai token ini; jangan menulis warna permukaan
+ * atau teks secara hardcoded agar kedua tema tetap terbaca.
+ */
+@theme {
+  --color-background: #f5f6f8;
+  --color-surface: #ffffff;
+
+  --color-foreground: #20242c;
+  --color-muted-foreground: #606978;
+
+  --color-border: #e2e5ea;
+  --color-border-strong: #cfd5de;
+
+  --color-primary: #014baa;
+  --color-primary-hover: #013e8c;
+  --color-primary-foreground: #ffffff;
+  --color-primary-soft: #e9eff8;
+
+  --color-action: #014baa;
+  --color-action-hover: #013e8c;
+  --color-action-foreground: #ffffff;
+  --color-cream: #f8f3f0;
+
+  --color-sidebar: #ffffff;
+  --color-sidebar-foreground: #4a5360;
+  --color-sidebar-muted: #606978;
+  --color-sidebar-border: #e2e5ea;
+  --color-sidebar-hover: #f8f3f0;
+  --color-sidebar-active: #e9eff8;
+  --color-sidebar-active-foreground: #014baa;
+  --color-sidebar-link: #014baa;
+
+  --color-success: #0f7a4d;
+  --color-success-soft: #eaf5ef;
+  --color-success-border: #c3e2d2;
+
+  --color-danger: #b42318;
+  --color-danger-foreground: #ffffff;
+  --color-danger-soft: #fdecea;
+  --color-danger-border: #f0c4bf;
+
+  --color-warning: #8a5a00;
+  --color-warning-soft: #fff4d6;
+  --color-warning-border: #e8d4a4;
+
+  --color-info: #014baa;
+  --color-info-soft: #e9eff8;
+  --color-info-border: #c9d9ee;
+  --color-overlay: #02061759;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --shadow-card: 0 1px 2px rgb(11 31 58 / 0.05);
+  --shadow-raised: 0 4px 16px -4px rgb(11 31 58 / 0.1),
+    0 1px 3px rgb(11 31 58 / 0.05);
+  --shadow-overlay: 0 16px 40px -12px rgb(11 31 58 / 0.28),
+    0 2px 8px rgb(11 31 58 / 0.08);
+}
+
+[data-theme="dark"] {
+  --color-background: #14161a;
+  --color-surface: #1c1f25;
+
+  --color-foreground: #e6e8ed;
+  --color-muted-foreground: #a3aab7;
+
+  --color-border: #30343c;
+  --color-border-strong: #424852;
+
+  --color-primary: #79a9ff;
+  --color-primary-hover: #9cbfff;
+  --color-primary-foreground: #101419;
+  --color-primary-soft: #1c2a40;
+
+  --color-action: #014baa;
+  --color-action-hover: #013e8c;
+  --color-action-foreground: #ffffff;
+  --color-cream: #24211d;
+
+  --color-sidebar: #171a1f;
+  --color-sidebar-foreground: #c9d0da;
+  --color-sidebar-muted: #a3aab7;
+  --color-sidebar-border: #30343c;
+  --color-sidebar-hover: #1f232a;
+  --color-sidebar-active: #1b2a40;
+  --color-sidebar-active-foreground: #79a9ff;
+  --color-sidebar-link: #79a9ff;
+
+  --color-success: #6ee7b7;
+  --color-success-soft: #12281f;
+  --color-success-border: #245540;
+
+  --color-danger: #fca5a5;
+  --color-danger-foreground: #2a0a0a;
+  --color-danger-soft: #351717;
+  --color-danger-border: #5e2a2a;
+
+  --color-warning: #f5c76b;
+  --color-warning-soft: #2e2510;
+  --color-warning-border: #5e4a1e;
+
+  --color-info: #79a9ff;
+  --color-info-soft: #1b2940;
+  --color-info-border: #2f4a6e;
+  --color-overlay: #000000a6;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  [data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    background-color: var(--color-background);
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-primary) 22%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* Logo Astaworks: versi gelap untuk latar terang, versi krem untuk gelap. */
+  .brand-logo-dark {
+    display: none;
+  }
+
+  [data-theme="dark"] .brand-logo-light {
+    display: none;
+  }
+
+  [data-theme="dark"] .brand-logo-dark {
+    display: block;
+  }
+}
+
+@layer utilities {
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
