@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   FileSpreadsheet,
   Info,
+  Loader2,
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -33,6 +34,7 @@ import {
 } from "@/components/ui/select";
 import { toErrorMessage } from "@/lib/errors";
 import { formatIDRPrecise, todayLocalISO } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import {
   EMPTY_MAPPING,
   IMPORT_FIELDS,
@@ -280,8 +282,11 @@ export function ImportExcelDialog({
 
   return (
     <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
+      <DialogContent
+        className="flex max-h-[calc(100dvh-2rem)] max-w-2xl flex-col overflow-hidden"
+        aria-busy={parsing || importing || undefined}
+      >
+        <DialogHeader className="shrink-0 border-b border-border pb-3">
           <DialogTitle>Import Excel</DialogTitle>
           <DialogDescription>
             Impor daftar pekerjaan dari berkas Excel menjadi dokumen RAB baru.
@@ -289,10 +294,26 @@ export function ImportExcelDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="px-6 pt-4 pb-5">
-          <p className="mb-4 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-            Langkah {step} dari 3
-          </p>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-5">
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex flex-1 gap-1.5" aria-hidden>
+              {[1, 2, 3].map((index) => (
+                <span
+                  key={index}
+                  className={cn(
+                    "h-1 flex-1 rounded-full transition-colors",
+                    index <= step ? "bg-primary" : "bg-border",
+                  )}
+                />
+              ))}
+            </div>
+            <p
+              className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
+              aria-current="step"
+            >
+              Langkah {step} dari 3
+            </p>
+          </div>
 
           {!hasProject ? (
             <EmptyState
@@ -341,7 +362,11 @@ export function ImportExcelDialog({
                   className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-dashed border-border-strong bg-background/60 px-3 py-3 text-[13px] transition-colors hover:border-primary"
                 >
                   <span className="flex min-w-0 items-center gap-2 text-muted-foreground">
-                    <Upload className="size-4 shrink-0" />
+                    {parsing ? (
+                      <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+                    ) : (
+                      <Upload className="size-4 shrink-0" />
+                    )}
                     <span className="truncate">
                       {parsing
                         ? "Membaca berkas…"
@@ -521,9 +546,15 @@ export function ImportExcelDialog({
                 </p>
                 <div className="max-h-56 overflow-auto">
                   <table className="w-full min-w-[520px] text-[12px]">
+                    <caption className="sr-only">
+                      Pratinjau lima baris pertama hasil pemetaan kolom
+                    </caption>
                     <thead className="bg-background/40">
                       <tr>
-                        <th className="px-2 py-1.5 text-left font-medium text-muted-foreground">
+                        <th
+                          scope="col"
+                          className="px-2 py-1.5 text-left font-medium text-muted-foreground"
+                        >
                           Baris
                         </th>
                         {IMPORT_FIELDS.filter(
@@ -531,6 +562,7 @@ export function ImportExcelDialog({
                         ).map((field) => (
                           <th
                             key={field.key}
+                            scope="col"
                             className="px-2 py-1.5 text-left font-medium text-muted-foreground"
                           >
                             {field.label}
@@ -644,7 +676,7 @@ export function ImportExcelDialog({
                   <p className="border-b border-warning-border px-3 py-2 text-[11px] font-medium tracking-wide text-warning uppercase">
                     Baris ambigu — periksa klasifikasinya
                   </p>
-                  <ul className="max-h-48 divide-y divide-amber-200/60 overflow-y-auto">
+                  <ul className="max-h-48 divide-y divide-warning-border/60 overflow-y-auto">
                     {plan.ambiguous.slice(0, 10).map((row) => (
                       <li
                         key={row.rowNumber}
@@ -769,7 +801,7 @@ export function ImportExcelDialog({
           ) : null}
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="shrink-0">
           {step === 1 ? (
             <>
               <Button variant="secondary" onClick={() => onOpenChange(false)}>
@@ -803,7 +835,14 @@ export function ImportExcelDialog({
                 onClick={() => void handleImport()}
                 disabled={importing || (plan?.items.length ?? 0) === 0}
               >
-                {importing ? "Mengimpor…" : `Impor ${plan?.items.length ?? 0} Item`}
+                {importing ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" aria-hidden />
+                    Mengimpor…
+                  </>
+                ) : (
+                  `Impor ${plan?.items.length ?? 0} Item`
+                )}
               </Button>
             </>
           )}

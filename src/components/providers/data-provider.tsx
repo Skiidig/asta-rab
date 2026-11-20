@@ -430,9 +430,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         ...document,
         client: project?.client || "—",
         location: project?.location || "—",
-        items: (workspace.items[document.id] ?? []).map((item) => ({
-          ...item,
-        })),
+        // Identitas array & item dipertahankan agar editor tidak membangun
+        // ulang ratusan baris tabel setiap render. Store selalu update
+        // immutabel, jadi salinan defensif di sini tidak diperlukan.
+        items: workspace.items[document.id] ?? [],
       };
     },
     [workspace.documents, workspace.projects, workspace.items],

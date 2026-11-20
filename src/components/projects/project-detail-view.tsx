@@ -108,9 +108,9 @@ export function ProjectDetailView({ projectId }: { projectId: string }) {
             <div className="flex flex-wrap items-center gap-2">
               <ProjectStatusBadge status={project.status} />
             </div>
-            <h1 className="mt-2 text-xl font-semibold tracking-tight text-foreground sm:text-[22px]">
+            <h2 className="mt-2 text-xl font-semibold tracking-tight text-foreground sm:text-[22px]">
               {project.name}
-            </h1>
+            </h2>
             <p className="mt-1 text-[13px] text-muted-foreground">{project.client}</p>
           </div>
 
@@ -164,12 +164,12 @@ export function ProjectDetailView({ projectId }: { projectId: string }) {
       <section aria-labelledby="project-documents-heading" className="space-y-3">
         <div className="flex flex-wrap items-end justify-between gap-2">
           <div>
-            <h2
+            <h3
               id="project-documents-heading"
               className="text-[15px] font-semibold tracking-tight text-foreground"
             >
               Dokumen RAB
-            </h2>
+            </h3>
             <p className="mt-0.5 text-[13px] text-muted-foreground">
               Semua dokumen RAB yang terhubung dengan proyek ini.
             </p>

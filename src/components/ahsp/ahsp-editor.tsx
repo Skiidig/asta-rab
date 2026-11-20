@@ -210,9 +210,9 @@ export function AhspEditor({ analysisId }: { analysisId: string }) {
                 per {analysis.unit}
               </span>
             </div>
-            <h1 className="mt-2 text-xl font-semibold tracking-tight text-foreground sm:text-[22px]">
+            <h2 className="mt-2 text-xl font-semibold tracking-tight text-foreground sm:text-[22px]">
               {analysis.name}
-            </h1>
+            </h2>
             {analysis.description ? (
               <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
                 {analysis.description}
@@ -256,12 +256,12 @@ export function AhspEditor({ analysisId }: { analysisId: string }) {
       <section aria-labelledby="ahsp-components-heading" className="space-y-3">
         <div className="flex flex-wrap items-end justify-between gap-2">
           <div>
-            <h2
+            <h3
               id="ahsp-components-heading"
               className="text-[15px] font-semibold tracking-tight text-foreground"
             >
               Komponen Analisis
-            </h2>
+            </h3>
             <p className="mt-0.5 text-[13px] text-muted-foreground">
               Jumlah biaya = koefisien × harga dasar. Total dihitung otomatis.
             </p>
@@ -305,9 +305,9 @@ export function AhspEditor({ analysisId }: { analysisId: string }) {
                 className="overflow-hidden rounded-xl border border-border bg-surface shadow-card"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-background/60 px-4 py-2.5">
-                  <h3 className="text-[13px] font-semibold text-foreground">
+                  <h4 className="text-[13px] font-semibold text-foreground">
                     {group.category}
-                  </h3>
+                  </h4>
                   <p className="text-[13px] text-muted-foreground">
                     Subtotal{" "}
                     <span className="font-semibold text-foreground tabular-nums">

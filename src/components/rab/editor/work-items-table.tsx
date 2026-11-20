@@ -1,6 +1,13 @@
 "use client";
 
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import {
   BookOpen,
   Calculator,
@@ -78,7 +85,7 @@ function UnitSelect({
     >
       <SelectTrigger
         aria-label={`Satuan baris ${index}`}
-        className="h-8 border-transparent bg-transparent px-2 text-[13px] shadow-none hover:border-border"
+        className="h-9 border-transparent bg-transparent px-2 text-[13px] shadow-none hover:border-border"
       >
         <SelectValue />
       </SelectTrigger>
@@ -100,6 +107,12 @@ function UnitSelect({
  *
  * Di-memo agar mengetik pada satu baris tidak me-render ulang ratusan baris
  * lain (Villa: 490 item). Callback dari induk harus stabil.
+ *
+ * Pembandingnya menilai `row.item`, bukan objek `row`: `buildDisplayRows`
+ * membuat pembungkus baris baru setiap kali dijalankan, sehingga perbandingan
+ * dangkal selalu berbeda dan memo tidak pernah bekerja. Item yang tidak diubah
+ * mempertahankan identitasnya di store, jadi hanya baris yang diedit yang
+ * di-render ulang.
  */
 const ItemRowView = memo(function ItemRowView({
   row,
@@ -120,7 +133,7 @@ const ItemRowView = memo(function ItemRowView({
   const missingDescription = item.description.trim().length === 0;
 
   return (
-    <tr className="group border-b border-border/70 transition-colors hover:bg-background/50 focus-within:bg-background/50">
+    <tr className="group border-b border-border transition-colors hover:bg-background/50 focus-within:bg-background/50">
       <td className="px-3 py-1.5 text-[13px] text-muted-foreground tabular-nums">
         {number}
       </td>
@@ -192,7 +205,15 @@ const ItemRowView = memo(function ItemRowView({
       </td>
     </tr>
   );
-});
+},
+  (prev, next) =>
+    prev.row.item === next.row.item &&
+    prev.row.number === next.row.number &&
+    prev.onChangeItem === next.onChangeItem &&
+    prev.onRemoveItem === next.onRemoveItem &&
+    prev.onFocusItem === next.onFocusItem &&
+    prev.onBlurItem === next.onBlurItem,
+);
 
 const HEADING_STYLES: Record<0 | 1 | 2, string> = {
   0: "bg-background/70 font-semibold tracking-wide text-foreground uppercase",
@@ -288,6 +309,16 @@ const SUBTOTAL_INDENT: Record<0 | 1 | 2, string> = {
   1: "pr-3",
   2: "pr-3",
 };
+
+/**
+ * Wilayah tabel digulir terbatas sehingga kepala kolom dan grand total tetap
+ * menempel saat berpindah di antara ratusan baris. `border-collapse` membuat
+ * garis ikut tergulir, jadi garisnya diganti inset shadow pada sel.
+ */
+const STICKY_HEAD_CELL =
+  "sticky top-0 z-10 bg-background shadow-[inset_0_-1px_0_var(--color-border)]";
+const STICKY_FOOT_CELL =
+  "sticky bottom-0 z-10 bg-primary-soft shadow-[inset_0_2px_0_var(--color-border)]";
 
 /**
  * Tabel RAB bergaya Excel: satu tabel panjang berisi heading GROUP/SUBGROUP/
@@ -406,9 +437,53 @@ export function WorkItemsTable({
     [onAddItem],
   );
 
+  /**
+   * Navigasi gaya spreadsheet: panah atas/bawah memindahkan fokus ke kolom
+   * yang sama pada baris item berikutnya. Baris heading/subtotal tanpa input di
+   * kolom itu dilewati, dan pemicu Select dibiarkan agar menu satuan tetap
+   * memakai panahnya sendiri.
+   */
+  const handleTableKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+
+      const row = target.closest("tr");
+      const cell = target.closest("td");
+      if (!row || !cell) return;
+
+      const body = row.parentElement;
+      if (!(body instanceof HTMLTableSectionElement)) return;
+
+      const rows = Array.from(body.rows);
+      const startIndex = rows.indexOf(row);
+      const cellIndex = Array.from(row.cells).indexOf(cell);
+      if (startIndex < 0 || cellIndex < 0) return;
+
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      for (
+        let index = startIndex + step;
+        index >= 0 && index < rows.length;
+        index += step
+      ) {
+        const nextInput = rows[index].cells[cellIndex]?.querySelector("input");
+        if (nextInput) {
+          event.preventDefault();
+          nextInput.focus();
+          return;
+        }
+      }
+    },
+    [],
+  );
+
   return (
     <div
       ref={tableRef}
+      onKeyDown={handleTableKeyDown}
       className="overflow-hidden rounded-xl border border-border bg-surface shadow-card"
     >
       <div className="border-b border-border bg-background/40 px-3 py-2.5">
@@ -486,32 +561,32 @@ export function WorkItemsTable({
         </div>
       </div>
 
-      <div className="relative overflow-x-auto">
+      <div className="relative max-h-[70dvh] overflow-auto">
         <table className="w-full min-w-[880px] border-collapse text-sm">
           <caption className="sr-only">
             Daftar pekerjaan RAB beserta kelompok dan subtotal
           </caption>
           <thead>
             <tr className="border-b border-border bg-background/60">
-              <th scope="col" className="w-12 px-3 py-2.5 text-left text-xs font-medium text-muted-foreground">
+              <th scope="col" className={cn("w-12 px-3 py-2.5 text-left text-xs font-medium text-muted-foreground", STICKY_HEAD_CELL)}>
                 No.
               </th>
-              <th scope="col" className="px-3 py-2.5 text-left text-xs font-medium text-muted-foreground">
+              <th scope="col" className={cn("px-3 py-2.5 text-left text-xs font-medium text-muted-foreground", STICKY_HEAD_CELL)}>
                 Uraian Pekerjaan
               </th>
-              <th scope="col" className="w-28 px-3 py-2.5 text-right text-xs font-medium text-muted-foreground">
+              <th scope="col" className={cn("w-28 px-3 py-2.5 text-right text-xs font-medium text-muted-foreground", STICKY_HEAD_CELL)}>
                 Volume
               </th>
-              <th scope="col" className="w-28 px-3 py-2.5 text-left text-xs font-medium text-muted-foreground">
+              <th scope="col" className={cn("w-28 px-3 py-2.5 text-left text-xs font-medium text-muted-foreground", STICKY_HEAD_CELL)}>
                 Satuan
               </th>
-              <th scope="col" className="w-40 px-3 py-2.5 text-right text-xs font-medium text-muted-foreground">
+              <th scope="col" className={cn("w-40 px-3 py-2.5 text-right text-xs font-medium text-muted-foreground", STICKY_HEAD_CELL)}>
                 Harga Satuan
               </th>
-              <th scope="col" className="w-40 px-3 py-2.5 text-right text-xs font-medium text-muted-foreground">
+              <th scope="col" className={cn("w-40 px-3 py-2.5 text-right text-xs font-medium text-muted-foreground", STICKY_HEAD_CELL)}>
                 Jumlah Harga
               </th>
-              <th scope="col" className="w-14 px-3 py-2.5 text-right text-xs font-medium text-muted-foreground">
+              <th scope="col" className={cn("w-14 px-3 py-2.5 text-right text-xs font-medium text-muted-foreground", STICKY_HEAD_CELL)}>
                 <span className="sr-only">Aksi</span>
               </th>
             </tr>
@@ -587,13 +662,13 @@ export function WorkItemsTable({
           </tbody>
           <tfoot>
             <tr className="border-t-2 border-border bg-primary-soft/60">
-              <td colSpan={5} className="px-3 py-3 text-right text-sm font-semibold text-foreground">
+              <td colSpan={5} className={cn("px-3 py-3 text-right text-sm font-semibold text-foreground", STICKY_FOOT_CELL)}>
                 Grand Total
               </td>
-              <td className="px-3 py-3 text-right text-sm font-semibold tracking-tight whitespace-nowrap text-primary tabular-nums">
+              <td className={cn("px-3 py-3 text-right text-sm font-semibold tracking-tight whitespace-nowrap text-primary tabular-nums", STICKY_FOOT_CELL)}>
                 {formatIDRMoney(total)}
               </td>
-              <td />
+              <td className={STICKY_FOOT_CELL} />
             </tr>
           </tfoot>
         </table>
