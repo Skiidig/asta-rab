@@ -155,9 +155,30 @@ interface DataContextValue {
   retryDocumentSave: (documentId: string) => Promise<void>;
   /** Kirim perubahan tertunda untuk satu dokumen dan tunggu hasilnya. */
   flushDocumentWrites: (documentId: string) => Promise<void>;
+  getComparisonSnapshot: (
+    baselineId: string,
+    comparisonId: string,
+  ) => Promise<readonly [RabDocumentDetail | undefined, RabDocumentDetail | undefined]>;
 }
 
 const DataContext = createContext<DataContextValue | null>(null);
+
+function readDocumentDetail(
+  workspace: WorkspaceData,
+  id: string,
+): RabDocumentDetail | undefined {
+  const document = workspace.documents.find((entry) => entry.id === id);
+  if (!document) return undefined;
+
+  const project = workspace.projects.find((entry) => entry.id === document.projectId);
+  return {
+    ...document,
+    client: project?.client || "—",
+    location: project?.location || "—",
+    // Store diperbarui secara immutabel. Pertahankan identitas item saat render.
+    items: workspace.items[id] ?? [],
+  };
+}
 
 /**
  * Supabase-backed data layer.
@@ -285,13 +306,31 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const getQueue = useCallback(() => {
     if (queueRef.current) return queueRef.current;
 
+    const appendWorkItem = (documentId: string, item: RabWorkItem) => {
+      commit((state) => {
+        const items = state.items[documentId] ?? [];
+        if (items.some((entry) => entry.id === item.id)) return state;
+        return {
+          ...state,
+          items: {
+            ...state.items,
+            [documentId]: [...items, item],
+          },
+        };
+      });
+    };
+
     queueRef.current = new SaveQueue(
       {
         writeItem: (itemId, patch) => updateWorkItemRecord(itemId, patch),
         writeDocument: (documentId, patch) =>
           updateDocumentRecord(documentId, patch),
-        createItem: (documentId, preset) =>
-          createWorkItemRecord(documentId, preset as WorkItemPreset),
+        createItem: async (documentId, preset) => {
+          const item = await createWorkItemRecord(documentId, preset);
+          // Terbitkan item sebelum flush dapat mengambil snapshot dokumen.
+          appendWorkItem(documentId, item);
+          return item;
+        },
         fetchItem: (itemId) => fetchWorkItemRecord(itemId),
         deleteItem: (itemId) => deleteWorkItemRecord(itemId),
       },
@@ -311,19 +350,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
             return { ...previous, [documentId]: next };
           });
         },
-        onItemRecovered: (documentId, item) => {
-          commit((state) => {
-            const items = state.items[documentId] ?? [];
-            if (items.some((entry) => entry.id === item.id)) return state;
-            return {
-              ...state,
-              items: {
-                ...state.items,
-                [documentId]: [...items, item],
-              },
-            };
-          });
-        },
+        onItemRecovered: appendWorkItem,
         onItemDeleted: (documentId, itemId) => {
           commit((state) => {
             const items = state.items[documentId];
@@ -359,28 +386,63 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     return queueRef.current;
   }, [commit]);
 
-  /**
-   * Push every debounced item edit immediately.
-   *
-   * Best effort: used on unmount and when the page is hidden or reloaded, where
-   * waiting out the 500 ms debounce would drop the last keystroke.
-   */
+  /** Best effort for item and metadata writes while the browser still runs. */
   const flushPendingWrites = useCallback(() => {
     queueRef.current?.flushAllBestEffort();
   }, []);
 
-  /**
-   * Kirim semua perubahan item yang masih menunggu debounce untuk satu dokumen.
-   *
-   * Berbeda dengan `flushPendingWrites` (best effort saat halaman ditutup),
-   * fungsi ini menunggu hasilnya dan melempar error — dipakai sebelum
-   * duplikasi agar salinan tidak dibuat dari data setengah tersimpan.
-   */
-  const flushDocumentWrites = useCallback(
-    async (documentId: string) => {
-      await getQueue().flushDocument(documentId);
+  const flushAndReadWorkspace = useCallback(
+    async (documentIds: string[]) => {
+      const queue = getQueue();
+      function documentTitle(id: string) {
+        return workspaceRef.current.documents.find((entry) => entry.id === id)?.title ?? id;
+      }
+      function saveError(id: string, message: string) {
+        return new Error(
+          `Perubahan dokumen "${documentTitle(id)}" belum tersimpan (${message}). Buka dokumen dan pilih Coba lagi jika status penyimpanan gagal.`,
+        );
+      }
+
+      await Promise.all(documentIds.map(async (id) => {
+        try {
+          await queue.flushDocument(id);
+        } catch (caught) {
+          throw saveError(id, toErrorMessage(caught));
+        }
+      }));
+
+      // Periksa lagi dan ambil snapshot dalam giliran yang sama. Saat menunggu
+      // dokumen lain, perubahan baru bisa masuk ke antrean dokumen pertama.
+      for (const id of documentIds) {
+        const state = queue.snapshot(id);
+        if (state.phase === "error") {
+          throw saveError(id, state.message ?? "Gagal menyimpan");
+        }
+        if (state.phase !== "saved") {
+          throw new Error(`Tunggu sampai perubahan dokumen "${documentTitle(id)}" tersimpan, lalu coba lagi.`);
+        }
+      }
+      return workspaceRef.current;
     },
     [getQueue],
+  );
+
+  const flushDocumentWrites = useCallback(
+    async (documentId: string) => {
+      await flushAndReadWorkspace([documentId]);
+    },
+    [flushAndReadWorkspace],
+  );
+
+  const getComparisonSnapshot = useCallback(
+    async (baselineId: string, comparisonId: string) => {
+      const snapshot = await flushAndReadWorkspace([baselineId, comparisonId]);
+      return [
+        readDocumentDetail(snapshot, baselineId),
+        readDocumentDetail(snapshot, comparisonId),
+      ] as const;
+    },
+    [flushAndReadWorkspace],
   );
 
   useEffect(() => {
@@ -418,25 +480,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   );
 
   const getDocumentDetail = useCallback(
-    (id: string): RabDocumentDetail | undefined => {
-      const document = workspace.documents.find((entry) => entry.id === id);
-      if (!document) return undefined;
-
-      const project = workspace.projects.find(
-        (entry) => entry.id === document.projectId,
-      );
-
-      return {
-        ...document,
-        client: project?.client || "—",
-        location: project?.location || "—",
-        // Identitas array & item dipertahankan agar editor tidak membangun
-        // ulang ratusan baris tabel setiap render. Store selalu update
-        // immutabel, jadi salinan defensif di sini tidak diperlukan.
-        items: workspace.items[document.id] ?? [],
-      };
-    },
-    [workspace.documents, workspace.projects, workspace.items],
+    (id: string) => readDocumentDetail(workspace, id),
+    [workspace],
   );
 
   /* ---------------------------------------------------------------------- */
@@ -620,21 +665,16 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         );
       }
 
-      const source = workspaceRef.current.documents.find(
-        (document) => document.id === id,
-      );
+      const workspace = await flushAndReadWorkspace([id]);
+      const source = workspace.documents.find((document) => document.id === id);
       if (!source) throw new Error("Dokumen sumber tidak ditemukan.");
 
-      const items = workspaceRef.current.items[id];
+      const items = workspace.items[id];
       if (!Array.isArray(items)) {
         throw new Error(
           "Item dokumen sumber belum termuat. Muat ulang halaman lalu coba lagi.",
         );
       }
-
-      // Kirim perubahan editor yang masih menunggu debounce supaya item, judul,
-      // dan total salinan berasal dari kondisi sumber yang sama.
-      await flushDocumentWrites(id);
 
       const storedCount = await countDocumentItems(id);
       if (storedCount !== items.length) {
@@ -673,7 +713,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         throw caught;
       }
     },
-    [commit, flushDocumentWrites, resync, status],
+    [commit, flushAndReadWorkspace, resync, status],
   );
 
   /* ---------------------------------------------------------------------- */
@@ -691,18 +731,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       }
 
       // ID item dibuat sekali di antrean dan dipakai ulang saat retry.
-      const item = await getQueue().addItem(documentId, preset ?? {});
-      commit((state) => ({
-        ...state,
-        items: {
-          ...state.items,
-          [documentId]: [...(state.items[documentId] ?? []), item],
-        },
-      }));
-
-      return item;
+      return getQueue().addItem(documentId, preset ?? {});
     },
-    [commit, getQueue],
+    [getQueue],
   );
 
   /**
@@ -791,29 +822,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   );
 
   const removeWorkItem = useCallback(
-    async (documentId: string, itemId: string) => {
-      commit((state) => {
-        const items = state.items[documentId];
-        if (!items?.some((item) => item.id === itemId)) return state;
-
-        return {
-          ...state,
-          items: {
-            ...state.items,
-            [documentId]: items.filter((item) => item.id !== itemId),
-          },
-        };
-      });
-
-      try {
-        await getQueue().deleteItem(documentId, itemId);
-      } catch (caught) {
-        // Perilaku editor sebelumnya: item dikembalikan dari server.
-        void resync();
-        throw caught;
-      }
-    },
-    [commit, getQueue, resync],
+    (documentId: string, itemId: string) => getQueue().deleteItem(documentId, itemId),
+    [getQueue],
   );
 
   const getDocumentSaveState = useCallback(
@@ -893,6 +903,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       getDocumentSaveState,
       retryDocumentSave,
       flushDocumentWrites,
+      getComparisonSnapshot,
     }),
     [
       status,
@@ -921,6 +932,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       getDocumentSaveState,
       retryDocumentSave,
       flushDocumentWrites,
+      getComparisonSnapshot,
     ],
   );
 
