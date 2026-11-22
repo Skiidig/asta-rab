@@ -202,24 +202,40 @@ Untuk pengguna yang biasa menyusun RAB di Excel.
 
 **Import** (tombol "Import Excel" di halaman RAB):
 1. Pilih proyek tujuan, berkas `.xlsx`/`.xls`, dan nama dokumen.
-2. Pilih sheet, baris header, dan **pemetaan kolom** (dikenali otomatis dari
-   variasi nama umum: Uraian/Nama Pekerjaan/Deskripsi, Volume/Qty/Kuantitas,
-   Satuan/Unit, Harga Satuan/Harga, Jumlah Harga/Total) + pratinjau 5 baris.
-3. Ringkasan validasi: baris ditemukan, valid, dilewati, bermasalah (dengan
-   alasan per baris) dan catatan (mis. satuan tak dikenal).
+2. Pilih sheet, baris header, **pemetaan kolom** (dikenali otomatis dari variasi
+   nama umum: Uraian/Nama Pekerjaan/Deskripsi, Volume/Qty/Kuantitas,
+   Satuan/Unit, Harga Satuan/Harga, Jumlah Harga/Total), dan opsional **format
+   angka teks terpisah** untuk kolom Volume vs Harga & Jumlah + pratinjau 5
+   baris.
+3. Ringkasan validasi: item valid, struktur terbaca, baris ambigu, peringatan
+   subtotal/total, baris bermasalah (dengan alasan per baris, dapat diperiksa
+   meski 0 item valid), dan catatan (mis. satuan kustom). Bila item valid dan
+   baris bermasalah muncul bersamaan, pengguna wajib mengonfirmasi impor parsial
+   secara eksplisit sebelum melanjutkan.
 4. Konfirmasi → dibuat **dokumen RAB baru** beserta itemnya; dokumen lama tidak
-   pernah ditimpa. Bila penyimpanan item gagal di tengah jalan, dokumen yang
-   baru dibuat dihapus kembali (tidak ada data parsial).
+   pernah ditimpa. Bila penyimpanan item gagal di tengah jalan, aplikasi
+   berusaha menghapus dokumen yang baru dibuat (*best-effort cleanup* di klien);
+   karena bukan transaksi database atomik, apabila proses pembersihan itu ikut
+   gagal (mis. koneksi terputus), dokumen baru yang kosong/parsial dapat
+   tertinggal dan perlu dihapus manual.
 
 Aturan validasi ([excel-import.ts](src/lib/excel-import.ts)):
-- Uraian kosong, volume/harga bukan angka valid → baris bermasalah (tidak diimpor).
-- Baris kosong dan baris total/subtotal dilewati.
-- Selisih subtotal file vs hitungan item ditampilkan sebagai peringatan.
+- Uraian kosong, volume/harga kosong/negatif/ambigu/tidak valid, baris yang
+  hanya mengisi `Jumlah Harga` tanpa volume dan harga satuan, atau sel error
+  rumus Excel (`#DIV/0!`, `#REF!`, `#VALUE!`) → baris bermasalah (tidak diimpor
+  dan tidak pernah berubah menjadi judul atau merusak hierarki item berikutnya).
+- Baris kosong dan baris total/subtotal dilewati dari daftar item.
+- Selisih subtotal/total file vs hitungan item — termasuk nilai moneter
+  subtotal/total yang ambigu, negatif, atau tidak terbaca — ditampilkan sebagai
+  peringatan.
 - **Struktur dipertahankan**: baris judul diklasifikasikan GROUP → SUBGROUP →
   ITEM GROUP; item menyimpan `group_name`/`subgroup_name`/`item_group_name` +
-  `sort_order` (nomor baris Excel). Baris subtotal/total tidak diimpor sebagai
-  item. Klasifikasi mengikuti urutan baris, sehingga kode kelompok yang dipakai
-  ulang (mis. `A` dua kali) tetap menjadi kelompok baru.
+  `sort_order` (nomor baris Excel). Judul struktural (`I`, `A`, `A.`, `A.1`)
+  yang menaruh `-` pada kolom volume/harga kosong tetap diperlakukan sebagai
+  judul, sedangkan percobaan baris item bergaris datar atau tanpa angka valid
+  tetap dilaporkan sebagai baris bermasalah. Klasifikasi mengikuti urutan baris,
+  sehingga kode kelompok yang dipakai ulang (mis. `A` dua kali) tetap menjadi
+  kelompok baru.
 - **Koreksi sebelum impor**: judul tanpa item ditandai *ambigu* dan dapat
   diubah klasifikasinya (Group / Subgroup / Item group / Catatan) di langkah
   pratinjau; total dan struktur dihitung ulang saat koreksi.
@@ -230,9 +246,26 @@ Aturan validasi ([excel-import.ts](src/lib/excel-import.ts)):
   sebagai baris, tetapi item di bawahnya tetap masuk ke kelompoknya; baris
   dengan harga berupa teks (mis. "Supply by owner") dilaporkan sebagai baris
   bermasalah, bukan diimpor.
-- Satuan kosong/tak dikenal → memakai `unit` dengan catatan.
-- Angka format Indonesia (`1.500`, `2,5`) maupun internasional (`1,500`,
-  `2.5`), termasuk awalan `Rp`, ditangani; negatif/NaN/Infinity ditolak.
+- Satuan kosong → memakai `unit` dengan catatan; satuan kustom (mis. `m'`,
+  `Point`) dipertahankan apa adanya dengan catatan.
+- **Parsing angka ketat & terpisah per kolom**:
+  - Sel angka Excel (`t: "n"`) selalu dibaca sesuai nilai numerik aslinya, tidak
+    terpengaruh pilihan format teks.
+  - Format teks tak ambigu diterima otomatis: `1.234,56`, `1,234.56`,
+    `1.234.567`, `1,234,567`, desimal selain 3 digit (`2,5`, `2.5`, `1000.234`),
+    desimal berawalan nol tunggal (`0.500`, `0,500`, `0.234`, `0,234` — berlaku
+    di semua mode termasuk `Indonesia` dan `Internasional` karena nol tidak
+    pernah menjadi grup ribuan), serta notasi rupiah Indonesia (`Rp 150.000,-`
+    → `150000`).
+  - Teks dengan pemisah tunggal + 3 digit (`"1.500"`, `"1,234"`, `"150.000"`)
+    **tidak pernah ditebak diam-diam** pada mode bawaan `Otomatis (ketat)` dan
+    ditandai ambigu; pengguna dapat memilih format teks secara terpisah untuk
+    **Volume** dan **Harga & Jumlah** (`Otomatis (ketat)` / `Indonesia` /
+    `Internasional`), sehingga campuran seperti Volume `"1.500"` (= `1,5`) dan
+    Harga `"150.000"` (= `150.000`) dapat diimpor secara akurat tanpa mengubah
+    workbook.
+  - Nilai negatif, `NaN`, `Infinity`, teks campur huruf (`"10 m2"`, `"abc12"`),
+    dan error rumus ditolak.
 - "Jumlah Harga" dihitung ulang dari volume × harga satuan.
 - Batas: berkas 5 MB, 1.000 baris per import, sheet dibaca maksimal 5.000 baris.
 
@@ -353,7 +386,8 @@ scripts/
 ├── smoke-auth-rls.mjs       # Uji isolasi data antar pengguna
 ├── smoke-catalog.mjs        # Uji CRUD katalog, isolasi, dan snapshot harga
 ├── smoke-ahsp.mjs           # Uji CRUD AHSP, isolasi, snapshot katalog & RAB
-└── smoke-import.mjs         # Uji jalur DB import Excel (dokumen baru, batch, RLS)
+├── smoke-import.mjs         # Uji jalur DB import Excel (dokumen baru, batch, RLS)
+└── test-excel-import.mjs    # Uji regresi deterministik parser, klasifikasi & workbook Excel
 ```
 
 ## Alur data
@@ -372,13 +406,14 @@ scripts/
 ## Menguji
 
 ```bash
-npm run build                      # typecheck penuh
-npm run lint                       # ESLint
-node scripts/smoke-crud.mjs        # CRUD end-to-end
-node scripts/smoke-auth-rls.mjs    # isolasi data antar pengguna
-node scripts/smoke-catalog.mjs     # CRUD katalog + isolasi + snapshot harga
-node scripts/smoke-ahsp.mjs        # CRUD AHSP + isolasi + snapshot katalog/RAB
-node scripts/smoke-import.mjs      # jalur DB import Excel (dokumen baru + RLS)
+npm run build                               # typecheck penuh & build produksi
+npm run lint                                # ESLint
+node --test scripts/test-excel-import.mjs   # uji regresi import Excel (lokal, tanpa DB)
+node scripts/smoke-crud.mjs                 # CRUD end-to-end
+node scripts/smoke-auth-rls.mjs             # isolasi data antar pengguna
+node scripts/smoke-catalog.mjs              # CRUD katalog + isolasi + snapshot harga
+node scripts/smoke-ahsp.mjs                 # CRUD AHSP + isolasi + snapshot katalog/RAB
+node scripts/smoke-import.mjs               # jalur DB import Excel (dokumen baru + RLS)
 ```
 
 Setelah RLS aktif, `smoke-crud.mjs` juga memerlukan sesi terkonfirmasi:

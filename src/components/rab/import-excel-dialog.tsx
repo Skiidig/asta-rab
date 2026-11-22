@@ -36,13 +36,19 @@ import { toErrorMessage } from "@/lib/errors";
 import { formatIDRPrecise, todayLocalISO } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
+  DEFAULT_NUMBER_FORMAT_CONFIG,
   EMPTY_MAPPING,
   IMPORT_FIELDS,
   classifyImportMatrix,
   columnLetter,
   detectHeaderRow,
   detectWorkbookMetadata,
+  evaluateImportGuard,
+  hasSubtotalWarning,
+  inspectSpreadsheetNumber,
+  isUnreadableSubtotalCheck,
   mapColumns,
+  numberFormatForField,
   parseWorkbookFile,
   resolveHeader,
   type ColumnMapping,
@@ -50,12 +56,38 @@ import {
   type ImportOverrides,
   type ImportPlan,
   type ImportRowKind,
+  type NumberFormatConfig,
+  type NumberFormatMode,
+  type NumericFieldRole,
   type ParsedWorkbook,
+  type SubtotalCheck,
 } from "@/lib/excel-import";
 
 type Step = 1 | 2 | 3;
 
 const MAX_IMPORT_ROWS = 1000;
+
+const VOLUME_FORMAT_OPTIONS: { value: NumberFormatMode; label: string }[] = [
+  { value: "auto", label: "Otomatis (ketat)" },
+  { value: "id-ID", label: "Indonesia (koma desimal, mis. 1,500 = 1,5)" },
+  { value: "en-US", label: "Internasional (titik desimal, mis. 1.500 = 1,5)" },
+];
+
+const MONEY_FORMAT_OPTIONS: { value: NumberFormatMode; label: string }[] = [
+  { value: "auto", label: "Otomatis (ketat)" },
+  { value: "id-ID", label: "Indonesia (titik ribuan, mis. 150.000)" },
+  { value: "en-US", label: "Internasional (koma ribuan, mis. 150,000)" },
+];
+
+const PREVIEW_NUMBER_FORMATTER = new Intl.NumberFormat("id-ID", {
+  maximumFractionDigits: 6,
+});
+
+const NUMERIC_PREVIEW_FIELDS = new Set<ImportFieldKey>([
+  "volume",
+  "unitPrice",
+  "amount",
+]);
 
 /** Pilihan koreksi klasifikasi untuk baris ambigu. */
 const KIND_OPTIONS = [
@@ -101,7 +133,12 @@ export function ImportExcelDialog({
   const [sheetName, setSheetName] = useState("");
   const [headerRow, setHeaderRow] = useState(1);
   const [mapping, setMapping] = useState<ColumnMapping>(EMPTY_MAPPING);
+  const [numberFormats, setNumberFormats] = useState<NumberFormatConfig>(
+    DEFAULT_NUMBER_FORMAT_CONFIG,
+  );
   const [overrides, setOverrides] = useState<ImportOverrides>({});
+  const [confirmPartialImport, setConfirmPartialImport] = useState(false);
+  const [showAllProblems, setShowAllProblems] = useState(false);
   const [metadata, setMetadata] = useState<
     ReturnType<typeof detectWorkbookMetadata> | null
   >(null);
@@ -125,8 +162,19 @@ export function ImportExcelDialog({
     return classifyImportMatrix(matrix, mapping, headerRow - 1, {
       maxRows: MAX_IMPORT_ROWS,
       overrides,
+      numberFormat: numberFormats,
     });
-  }, [matrix, mapping, headerRow, overrides, mappingComplete]);
+  }, [matrix, mapping, headerRow, overrides, mappingComplete, numberFormats]);
+
+  const guard = useMemo(
+    () => evaluateImportGuard(plan, confirmPartialImport),
+    [plan, confirmPartialImport],
+  );
+
+  const subtotalWarnings = useMemo(
+    () => (plan ? plan.subtotalChecks.filter(hasSubtotalWarning) : []),
+    [plan],
+  );
 
   const columnCount = useMemo(() => {
     const scan = matrix.slice(0, Math.max(headerRow, 1) + 5);
@@ -168,7 +216,10 @@ export function ImportExcelDialog({
     setFile(selected);
     setFileError(null);
     setParsed(null);
+    setNumberFormats(DEFAULT_NUMBER_FORMAT_CONFIG);
     setOverrides({});
+    setConfirmPartialImport(false);
+    setShowAllProblems(false);
     setMetadata(null);
     setStep(1);
 
@@ -207,6 +258,8 @@ export function ImportExcelDialog({
     setMapping(mapColumns(resolveHeader(nextMatrix, headerIndex).labels));
     setMetadata(detectWorkbookMetadata(nextMatrix, headerIndex));
     setOverrides({});
+    setConfirmPartialImport(false);
+    setShowAllProblems(false);
   }
 
   function applyHeaderRow(value: number) {
@@ -218,6 +271,8 @@ export function ImportExcelDialog({
     setHeaderRow(safe);
     setMapping(mapColumns(resolveHeader(matrix, safe - 1).labels));
     setOverrides({});
+    setConfirmPartialImport(false);
+    setShowAllProblems(false);
   }
 
   function setFieldMapping(field: ImportFieldKey, value: string) {
@@ -226,6 +281,14 @@ export function ImportExcelDialog({
       [field]: value === "" ? null : Number(value),
     }));
     setOverrides({});
+    setConfirmPartialImport(false);
+    setShowAllProblems(false);
+  }
+
+  function applyFieldNumberFormat(role: NumericFieldRole, mode: NumberFormatMode) {
+    setNumberFormats((current) => ({ ...current, [role]: mode }));
+    setConfirmPartialImport(false);
+    setShowAllProblems(false);
   }
 
   /** Koreksi manual klasifikasi satu baris (dari daftar baris ambigu). */
@@ -239,15 +302,18 @@ export function ImportExcelDialog({
       }
       return next;
     });
+    setConfirmPartialImport(false);
   }
 
   function handleReview() {
-    if (!plan || plan.items.length === 0) return;
+    if (!mappingComplete || !guard.canReview) return;
+    setConfirmPartialImport(false);
+    setShowAllProblems(false);
     setStep(3);
   }
 
   async function handleImport() {
-    if (!plan || plan.items.length === 0) return;
+    if (!plan || !guard.canImport) return;
 
     setImporting(true);
 
@@ -540,6 +606,24 @@ export function ImportExcelDialog({
                 </div>
               </div>
 
+              <div className="grid gap-2.5 rounded-lg border border-border bg-background/40 p-3">
+                <p className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                  Format angka teks (opsional, terpisah per kolom)
+                </p>
+                <NumberFormatSelectors
+                  idPrefix="import-step2"
+                  formats={numberFormats}
+                  onChange={applyFieldNumberFormat}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Hanya berlaku untuk sel teks; sel angka Excel selalu dibaca sesuai
+                  nilainya. Volume dan Harga/Jumlah dapat memakai konvensi berbeda (mis.
+                  Volume &ldquo;1.500&rdquo; = 1,5 dan Harga &ldquo;150.000&rdquo; =
+                  150.000). Mode &ldquo;Otomatis (ketat)&rdquo; tidak pernah menebak teks
+                  ambigu.
+                </p>
+              </div>
+
               <div className="rounded-lg border border-border">
                 <p className="border-b border-border bg-background/60 px-3 py-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
                   Pratinjau 5 baris pertama
@@ -593,7 +677,14 @@ export function ImportExcelDialog({
                                 key={field.key}
                                 className="max-w-[180px] truncate px-2 py-1.5 text-foreground"
                               >
-                                {String(row.values[mapping[field.key] as number] ?? "")}
+                                <PreviewCell
+                                  field={field.key}
+                                  value={row.values[mapping[field.key] as number]}
+                                  numberFormat={numberFormatForField(
+                                    field.key,
+                                    numberFormats,
+                                  )}
+                                />
                               </td>
                             ))}
                           </tr>
@@ -609,6 +700,13 @@ export function ImportExcelDialog({
                   <Info className="mt-0.5 size-4 shrink-0" />
                   Kolom Uraian, Volume, dan Harga Satuan wajib dipetakan.
                 </p>
+              ) : plan && plan.problems.length > 0 ? (
+                <p className="flex items-start gap-2 rounded-lg border border-warning-border bg-warning-soft px-3 py-2 text-[13px] text-warning">
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                  Terdeteksi {plan.items.length} item valid dan {plan.problems.length}{" "}
+                  baris bermasalah. Lanjut ke &ldquo;Periksa Data&rdquo; untuk melihat
+                  rincian validasi.
+                </p>
               ) : null}
             </div>
           ) : plan ? (
@@ -621,9 +719,18 @@ export function ImportExcelDialog({
                 />
                 <SummaryStat
                   label="Perlu perhatian"
-                  value={plan.problems.length + plan.ambiguous.length}
+                  value={
+                    plan.problems.length +
+                    plan.ambiguous.length +
+                    plan.unreadableSubtotalCount
+                  }
                   tone={
-                    plan.problems.length + plan.ambiguous.length > 0 ? "negative" : undefined
+                    plan.problems.length +
+                      plan.ambiguous.length +
+                      plan.unreadableSubtotalCount >
+                    0
+                      ? "negative"
+                      : undefined
                   }
                 />
                 <SummaryStat label="Dilewati" value={plan.skipped.length} />
@@ -635,6 +742,27 @@ export function ImportExcelDialog({
                   {formatIDRPrecise(plan.total)}
                 </span>
               </div>
+
+              {plan.ambiguousNumberCount > 0 ||
+              numberFormats.volume !== "auto" ||
+              numberFormats.money !== "auto" ? (
+                <div className="grid gap-2.5 rounded-lg border border-warning-border bg-warning-soft px-3 py-2.5">
+                  <p className="text-[11px] font-medium tracking-wide text-warning uppercase">
+                    Format angka teks (Volume vs Harga &amp; Jumlah)
+                  </p>
+                  <NumberFormatSelectors
+                    idPrefix="import-review"
+                    formats={numberFormats}
+                    onChange={applyFieldNumberFormat}
+                    tone="warning"
+                  />
+                  <p className="text-xs text-warning">
+                    {plan.ambiguousNumberCount > 0
+                      ? `Terdeteksi angka teks ambigu (${plan.ambiguousVolumeCount} kolom Volume, ${plan.ambiguousMoneyCount} kolom Harga/Jumlah/Subtotal). Pilih format yang sesuai per kolom secara eksplisit, atau ubah sel tersebut menjadi angka di Excel. Sel angka Excel tidak terpengaruh.`
+                      : "Format angka teks diterapkan terpisah hanya pada sel teks; sel angka Excel tetap dibaca sesuai nilainya."}
+                  </p>
+                </div>
+              ) : null}
 
               {plan.truncated ? (
                 <p className="flex items-start gap-2 rounded-lg border border-warning-border bg-warning-soft px-3 py-2 text-[13px] text-warning">
@@ -719,48 +847,63 @@ export function ImportExcelDialog({
                 </div>
               ) : null}
 
-              {plan.subtotalChecks.some(
-                (check) => check.difference !== null && Math.abs(check.difference) > 0.5,
-              ) ? (
+              {subtotalWarnings.length > 0 ? (
                 <div className="rounded-lg border border-warning-border bg-warning-soft">
                   <p className="border-b border-warning-border px-3 py-2 text-[11px] font-medium tracking-wide text-warning uppercase">
-                    Subtotal di file berbeda dari hitungan
+                    Peringatan subtotal / total di file ({subtotalWarnings.length})
                   </p>
-                  <ul className="max-h-32 overflow-y-auto px-3 py-2 text-[13px] text-warning">
-                    {plan.subtotalChecks
-                      .filter(
-                        (check) =>
-                          check.difference !== null && Math.abs(check.difference) > 0.5,
-                      )
-                      .slice(0, 10)
-                      .map((check) => (
-                        <li key={check.rowNumber} className="py-0.5">
-                          <span className="font-medium">Baris {check.rowNumber}:</span>{" "}
-                          {check.label} — file {formatIDRPrecise(check.fileValue ?? 0)}, hitungan{" "}
-                          {formatIDRPrecise(check.computedValue)} ({SCOPE_LABEL[check.scope]})
-                        </li>
-                      ))}
+                  <ul className="max-h-40 overflow-y-auto px-3 py-2 text-[13px] text-warning">
+                    {subtotalWarnings.slice(0, 15).map((check) => (
+                      <SubtotalWarningItem key={check.rowNumber} check={check} />
+                    ))}
+                    {subtotalWarnings.length > 15 ? (
+                      <li className="py-0.5 text-muted-foreground">
+                        +{subtotalWarnings.length - 15} baris subtotal/total lainnya
+                      </li>
+                    ) : null}
                   </ul>
                   <p className="border-t border-warning-border px-3 py-2 text-xs text-warning">
                     Subtotal dan total tidak diimpor sebagai item; nilai dokumen dihitung
-                    dari item.
+                    dari item. Nilai moneter yang ambigu atau tidak terbaca tetap
+                    ditampilkan di sini agar dapat diverifikasi.
                   </p>
                 </div>
               ) : null}
 
               {plan.problems.length > 0 ? (
                 <div className="rounded-lg border border-danger-border bg-danger-soft">
-                  <p className="border-b border-danger-border px-3 py-2 text-[11px] font-medium tracking-wide text-danger uppercase">
-                    Baris bermasalah (tidak diimpor)
-                  </p>
-                  <ul className="max-h-40 overflow-y-auto px-3 py-2 text-[13px] text-danger">
-                    {plan.problems.slice(0, 20).map((problem) => (
-                      <li key={problem.rowNumber} className="py-0.5">
-                        <span className="font-medium">Baris {problem.rowNumber}:</span>{" "}
-                        {problem.reasons.join("; ")}
-                      </li>
-                    ))}
+                  <div className="flex items-center justify-between gap-2 border-b border-danger-border px-3 py-2">
+                    <p className="text-[11px] font-medium tracking-wide text-danger uppercase">
+                      Baris bermasalah — tidak diimpor ({plan.problems.length} baris)
+                    </p>
                     {plan.problems.length > 20 ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowAllProblems((current) => !current)}
+                        className="text-xs font-medium text-danger underline-offset-2 hover:underline"
+                      >
+                        {showAllProblems
+                          ? "Ringkas (20 baris)"
+                          : `Tampilkan semua (${plan.problems.length})`}
+                      </button>
+                    ) : null}
+                  </div>
+                  <ul className="max-h-56 overflow-y-auto px-3 py-2 text-[13px] text-danger">
+                    {(showAllProblems ? plan.problems : plan.problems.slice(0, 20)).map(
+                      (problem) => (
+                        <li key={problem.rowNumber} className="py-0.5">
+                          <span className="font-medium">Baris {problem.rowNumber}</span>
+                          {problem.description ? (
+                            <span className="text-danger/90">
+                              {" "}
+                              ({problem.description.slice(0, 60)})
+                            </span>
+                          ) : null}
+                          : {problem.reasons.join("; ")}
+                        </li>
+                      ),
+                    )}
+                    {!showAllProblems && plan.problems.length > 20 ? (
                       <li className="py-0.5 text-muted-foreground">
                         +{plan.problems.length - 20} baris lainnya
                       </li>
@@ -785,7 +928,29 @@ export function ImportExcelDialog({
                 </div>
               ) : null}
 
-              {plan.items.length > 0 ? (
+              {guard.requiresPartialConfirmation ? (
+                <div className="grid gap-2 rounded-lg border border-warning-border bg-warning-soft px-3 py-2.5 text-[13px] text-warning">
+                  <p className="flex items-start gap-2 font-medium">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                    Impor parsial: {guard.problemRowCount} baris bermasalah akan
+                    dilewati dan tidak masuk ke RAB. Hanya {guard.validItemCount} item
+                    valid yang akan diimpor.
+                  </p>
+                  <label className="flex cursor-pointer items-start gap-2 text-[13px] text-foreground">
+                    <input
+                      type="checkbox"
+                      checked={confirmPartialImport}
+                      onChange={(event) => setConfirmPartialImport(event.target.checked)}
+                      className="mt-0.5 size-4 rounded border-border accent-primary"
+                    />
+                    <span>
+                      Saya sudah memeriksa daftar baris bermasalah dan ingin tetap
+                      mengimpor {guard.validItemCount} item valid saja (
+                      {guard.problemRowCount} baris bermasalah dilewati).
+                    </span>
+                  </label>
+                </div>
+              ) : plan.items.length > 0 ? (
                 <p className="flex items-start gap-2 text-[13px] text-muted-foreground">
                   <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" />
                   {plan.items.length} item siap diimpor ke dokumen baru
@@ -794,7 +959,8 @@ export function ImportExcelDialog({
               ) : (
                 <p className="flex items-start gap-2 rounded-lg border border-danger-border bg-danger-soft px-3 py-2 text-[13px] text-danger">
                   <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-                  Tidak ada item valid. Periksa pemetaan kolom atau isi berkas.
+                  Tidak ada item valid untuk diimpor. Periksa baris bermasalah di atas,
+                  format angka teks, atau pemetaan kolom.
                 </p>
               )}
             </div>
@@ -821,7 +987,7 @@ export function ImportExcelDialog({
               </Button>
               <Button
                 onClick={handleReview}
-                disabled={!mappingComplete || !plan || plan.items.length === 0}
+                disabled={!mappingComplete || !guard.canReview}
               >
                 Periksa Data
               </Button>
@@ -833,7 +999,7 @@ export function ImportExcelDialog({
               </Button>
               <Button
                 onClick={() => void handleImport()}
-                disabled={importing || (plan?.items.length ?? 0) === 0}
+                disabled={importing || !guard.canImport}
               >
                 {importing ? (
                   <>
@@ -849,6 +1015,164 @@ export function ImportExcelDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function NumberFormatSelectors({
+  idPrefix,
+  formats,
+  onChange,
+  tone,
+}: {
+  idPrefix: string;
+  formats: NumberFormatConfig;
+  onChange: (role: NumericFieldRole, mode: NumberFormatMode) => void;
+  tone?: "warning";
+}) {
+  const labelClass = tone === "warning" ? "text-[12px] text-warning" : "text-[12px]";
+  const triggerClass = tone === "warning" ? "w-full bg-surface" : "w-full";
+
+  return (
+    <div className="grid gap-2.5 sm:grid-cols-2">
+      <div className="grid gap-1">
+        <Label htmlFor={`${idPrefix}-volume-format`} className={labelClass}>
+          Volume
+        </Label>
+        <Select
+          items={VOLUME_FORMAT_OPTIONS}
+          value={formats.volume}
+          onValueChange={(value) =>
+            onChange("volume", (value as NumberFormatMode) ?? "auto")
+          }
+        >
+          <SelectTrigger id={`${idPrefix}-volume-format`} className={triggerClass}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {VOLUME_FORMAT_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="grid gap-1">
+        <Label htmlFor={`${idPrefix}-money-format`} className={labelClass}>
+          Harga &amp; Jumlah
+        </Label>
+        <Select
+          items={MONEY_FORMAT_OPTIONS}
+          value={formats.money}
+          onValueChange={(value) =>
+            onChange("money", (value as NumberFormatMode) ?? "auto")
+          }
+        >
+          <SelectTrigger id={`${idPrefix}-money-format`} className={triggerClass}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {MONEY_FORMAT_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  );
+}
+
+function SubtotalWarningItem({ check }: { check: SubtotalCheck }) {
+  if (isUnreadableSubtotalCheck(check)) {
+    const detail =
+      check.fileStatus === "ambiguous"
+        ? `nilai file "${check.fileRaw}" ambigu — pilih Format angka Harga & Jumlah`
+        : check.fileStatus === "negative"
+          ? `nilai file negatif ("${check.fileRaw}")`
+          : `nilai file "${check.fileRaw}" tidak valid`;
+
+    return (
+      <li className="py-0.5">
+        <span className="font-medium">Baris {check.rowNumber}:</span> {check.label} —{" "}
+        {detail}; hitungan {formatIDRPrecise(check.computedValue)} (
+        {SCOPE_LABEL[check.scope]})
+      </li>
+    );
+  }
+
+  return (
+    <li className="py-0.5">
+      <span className="font-medium">Baris {check.rowNumber}:</span> {check.label} — file{" "}
+      {formatIDRPrecise(check.fileValue ?? 0)}, hitungan{" "}
+      {formatIDRPrecise(check.computedValue)} ({SCOPE_LABEL[check.scope]})
+    </li>
+  );
+}
+
+function PreviewCell({
+  field,
+  value,
+  numberFormat,
+}: {
+  field: ImportFieldKey;
+  value: unknown;
+  numberFormat: NumberFormatMode;
+}) {
+  if (!NUMERIC_PREVIEW_FIELDS.has(field)) {
+    return <>{String(value ?? "")}</>;
+  }
+
+  const inspected = inspectSpreadsheetNumber(value, numberFormat);
+  if (inspected.status === "empty") return null;
+
+  if (inspected.status === "ambiguous") {
+    return (
+      <span className="text-danger" title="Format angka teks ambigu">
+        {inspected.raw} (ambigu)
+      </span>
+    );
+  }
+
+  if (inspected.status === "negative") {
+    return (
+      <span className="text-danger" title="Nilai negatif tidak diizinkan">
+        {inspected.raw} (negatif)
+      </span>
+    );
+  }
+
+  if (inspected.status === "invalid") {
+    return (
+      <span className="text-danger" title="Bukan angka yang valid">
+        {inspected.raw}
+      </span>
+    );
+  }
+
+  if (
+    typeof value === "string" &&
+    inspected.value !== null &&
+    /[.,]/.test(inspected.raw)
+  ) {
+    return (
+      <span className="tabular-nums">
+        {inspected.raw}{" "}
+        <span className="text-muted-foreground">
+          (= {PREVIEW_NUMBER_FORMATTER.format(inspected.value)})
+        </span>
+      </span>
+    );
+  }
+
+  return (
+    <span className="tabular-nums">
+      {inspected.value !== null
+        ? PREVIEW_NUMBER_FORMATTER.format(inspected.value)
+        : inspected.raw}
+    </span>
   );
 }
 

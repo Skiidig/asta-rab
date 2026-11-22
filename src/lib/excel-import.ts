@@ -257,69 +257,276 @@ export function detectHeaderRow(matrix: unknown[][], maxScan = 20): number {
 /*  Parsing angka & satuan                                                    */
 /* -------------------------------------------------------------------------- */
 
-function stripCurrency(text: string): string {
-  return text
-    .replace(/\u00a0/g, " ")
-    .replace(/\brp\.?\s*/gi, "")
-    .replace(/\bidr\b/gi, "")
-    .trim();
+export type NumberFormatMode = "auto" | "id-ID" | "en-US";
+
+export type NumericFieldRole = "volume" | "money";
+
+export interface NumberFormatConfig {
+  /** Format teks untuk kolom Volume / kuantitas. */
+  volume: NumberFormatMode;
+  /** Format teks untuk kolom moneter (Harga Satuan, Jumlah Harga, subtotal/total). */
+  money: NumberFormatMode;
+}
+
+export const DEFAULT_NUMBER_FORMAT_CONFIG: NumberFormatConfig = {
+  volume: "auto",
+  money: "auto",
+};
+
+export function resolveNumberFormatConfig(
+  input?: NumberFormatMode | Partial<NumberFormatConfig>,
+): NumberFormatConfig {
+  if (!input) return { ...DEFAULT_NUMBER_FORMAT_CONFIG };
+  if (typeof input === "string") {
+    return { volume: input, money: input };
+  }
+  return {
+    volume: input.volume ?? "auto",
+    money: input.money ?? "auto",
+  };
+}
+
+/** Pilih mode format teks sesuai peran kolom (`volume` vs moneter). */
+export function numberFormatForField(
+  field: ImportFieldKey,
+  formats: NumberFormatConfig,
+): NumberFormatMode {
+  if (field === "volume") return formats.volume;
+  if (field === "unitPrice" || field === "amount") return formats.money;
+  return "auto";
+}
+
+export type NumberParseStatus =
+  | "empty"
+  | "ok"
+  | "negative"
+  | "ambiguous"
+  | "invalid";
+
+export interface ParsedNumberResult {
+  status: NumberParseStatus;
+  value: number | null;
+  raw: string;
+}
+
+const BARE_DASH_PATTERN = /^[-–—]+$/;
+const PLAIN_INTEGER_PATTERN = /^\d+$/;
+const CLEAN_NUMERIC_TOKEN_PATTERN = /^\d+(?:[.,]\d+)*$/;
+const LEADING_ZERO_DECIMAL_PATTERN = /^0[.,]\d+$/;
+const ID_THOUSANDS_ONLY_PATTERN = /^[1-9]\d{0,2}(?:\.\d{3})+$/;
+const ID_MULTI_THOUSANDS_PATTERN = /^[1-9]\d{0,2}(?:\.\d{3}){2,}$/;
+const ID_THOUSANDS_DECIMAL_PATTERN = /^[1-9]\d{0,2}(?:\.\d{3})+,\d+$/;
+const ID_DECIMAL_ONLY_PATTERN = /^\d+,\d+$/;
+const EN_THOUSANDS_ONLY_PATTERN = /^[1-9]\d{0,2}(?:,\d{3})+$/;
+const EN_MULTI_THOUSANDS_PATTERN = /^[1-9]\d{0,2}(?:,\d{3}){2,}$/;
+const EN_THOUSANDS_DECIMAL_PATTERN = /^[1-9]\d{0,2}(?:,\d{3})+\.\d+$/;
+const EN_DECIMAL_ONLY_PATTERN = /^\d+\.\d+$/;
+const AMBIGUOUS_SINGLE_COMMA_PATTERN = /^[1-9]\d{0,2},\d{3}$/;
+const AMBIGUOUS_SINGLE_DOT_PATTERN = /^[1-9]\d{0,2}\.\d{3}$/;
+
+function isBareDash(value: unknown): boolean {
+  return typeof value === "string" && BARE_DASH_PATTERN.test(value.trim());
+}
+
+function parseUnsignedNumericToken(
+  token: string,
+  mode: NumberFormatMode,
+): { status: "ok" | "ambiguous" | "invalid"; normalized: string | null } {
+  if (!CLEAN_NUMERIC_TOKEN_PATTERN.test(token)) {
+    return { status: "invalid", normalized: null };
+  }
+
+  if (PLAIN_INTEGER_PATTERN.test(token)) {
+    return { status: "ok", normalized: token };
+  }
+
+  // Desimal berawalan nol tunggal ("0.500", "0,500", "0.234", "0,234") selalu
+  // tak ambigu secara matematis karena nol tidak pernah menjadi grup ribuan.
+  if (LEADING_ZERO_DECIMAL_PATTERN.test(token)) {
+    return { status: "ok", normalized: token.replace(",", ".") };
+  }
+
+  if (mode === "id-ID") {
+    if (ID_DECIMAL_ONLY_PATTERN.test(token)) {
+      return { status: "ok", normalized: token.replace(",", ".") };
+    }
+    if (ID_THOUSANDS_ONLY_PATTERN.test(token)) {
+      return { status: "ok", normalized: token.replace(/\./g, "") };
+    }
+    if (ID_THOUSANDS_DECIMAL_PATTERN.test(token)) {
+      return {
+        status: "ok",
+        normalized: token.replace(/\./g, "").replace(",", "."),
+      };
+    }
+    return { status: "invalid", normalized: null };
+  }
+
+  if (mode === "en-US") {
+    if (EN_DECIMAL_ONLY_PATTERN.test(token)) {
+      return { status: "ok", normalized: token };
+    }
+    if (EN_THOUSANDS_ONLY_PATTERN.test(token)) {
+      return { status: "ok", normalized: token.replace(/,/g, "") };
+    }
+    if (EN_THOUSANDS_DECIMAL_PATTERN.test(token)) {
+      return { status: "ok", normalized: token.replace(/,/g, "") };
+    }
+    return { status: "invalid", normalized: null };
+  }
+
+  // mode === "auto" (ketat: tidak pernah menebak pemisah tunggal 3 digit)
+  const dots = (token.match(/\./g) ?? []).length;
+  const commas = (token.match(/,/g) ?? []).length;
+
+  if (dots > 0 && commas > 0) {
+    if (ID_THOUSANDS_DECIMAL_PATTERN.test(token)) {
+      return {
+        status: "ok",
+        normalized: token.replace(/\./g, "").replace(",", "."),
+      };
+    }
+    if (EN_THOUSANDS_DECIMAL_PATTERN.test(token)) {
+      return { status: "ok", normalized: token.replace(/,/g, "") };
+    }
+    return { status: "invalid", normalized: null };
+  }
+
+  if (dots > 1) {
+    return ID_MULTI_THOUSANDS_PATTERN.test(token)
+      ? { status: "ok", normalized: token.replace(/\./g, "") }
+      : { status: "invalid", normalized: null };
+  }
+
+  if (commas > 1) {
+    return EN_MULTI_THOUSANDS_PATTERN.test(token)
+      ? { status: "ok", normalized: token.replace(/,/g, "") }
+      : { status: "invalid", normalized: null };
+  }
+
+  if (commas === 1) {
+    if (AMBIGUOUS_SINGLE_COMMA_PATTERN.test(token)) {
+      return { status: "ambiguous", normalized: null };
+    }
+    return { status: "ok", normalized: token.replace(",", ".") };
+  }
+
+  if (dots === 1) {
+    if (AMBIGUOUS_SINGLE_DOT_PATTERN.test(token)) {
+      return { status: "ambiguous", normalized: null };
+    }
+    return { status: "ok", normalized: token };
+  }
+
+  return { status: "invalid", normalized: null };
+}
+
+/**
+ * Analisis angka dari sel Excel atau teks secara ketat.
+ *
+ * - Sel angka Excel (`typeof value === "number"`) selalu dibaca sesuai nilai
+ *   aslinya tanpa terpengaruh `mode` format teks.
+ * - Pada mode `"auto"` (bawaan), teks dengan pemisah tunggal + 3 digit seperti
+ *   `"1,234"` atau `"1.234"` ditandai `"ambiguous"` dan tidak pernah ditebak.
+ * - Notasi rupiah Indonesia berakhiran `,-` (mis. `"Rp 150.000,-"`) diterima
+ *   sebagai `,00` pada mode `"auto"` dan `"id-ID"`.
+ */
+export function inspectSpreadsheetNumber(
+  value: unknown,
+  mode: NumberFormatMode = "auto",
+): ParsedNumberResult {
+  if (value === null || value === undefined) {
+    return { status: "empty", value: null, raw: "" };
+  }
+
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      return { status: "invalid", value: null, raw: String(value) };
+    }
+    if (value < 0) {
+      return { status: "negative", value: null, raw: String(value) };
+    }
+    return {
+      status: "ok",
+      value: value === 0 ? 0 : value,
+      raw: String(value === 0 ? 0 : value),
+    };
+  }
+
+  if (typeof value !== "string") {
+    return { status: "invalid", value: null, raw: String(value) };
+  }
+
+  const raw = value.replace(/\u00a0/g, " ").trim();
+  if (raw === "") {
+    return { status: "empty", value: null, raw: "" };
+  }
+
+  let text = raw;
+  let negative = false;
+
+  if (/^\(.*\)$/.test(text)) {
+    negative = true;
+    text = text.slice(1, -1).trim();
+  }
+
+  if (text.startsWith("-")) {
+    if (negative) return { status: "invalid", value: null, raw };
+    negative = true;
+    text = text.slice(1).trim();
+  } else if (text.startsWith("+")) {
+    text = text.slice(1).trim();
+  }
+
+  text = text.replace(/^(?:rp\.?|idr)(?=\s|[\d+-]|$)\s*/i, "").trim();
+
+  if (text.startsWith("-")) {
+    if (negative) return { status: "invalid", value: null, raw };
+    negative = true;
+    text = text.slice(1).trim();
+  } else if (text.startsWith("+")) {
+    text = text.slice(1).trim();
+  }
+
+  text = text.replace(/\s+idr$/i, "").trim();
+
+  // Notasi mata uang Indonesia berakhiran ",-" (mis. "Rp 150.000,-" → "150.000,00").
+  if (/\d,-$/.test(text)) {
+    text = `${text.slice(0, -1)}00`;
+  }
+
+  const token = parseUnsignedNumericToken(text, mode);
+
+  if (token.status === "invalid") {
+    return { status: "invalid", value: null, raw };
+  }
+
+  if (negative) {
+    return { status: "negative", value: null, raw };
+  }
+
+  if (token.status === "ambiguous" || token.normalized === null) {
+    return { status: "ambiguous", value: null, raw };
+  }
+
+  const parsed = Number(token.normalized);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return { status: "invalid", value: null, raw };
+  }
+
+  return { status: "ok", value: parsed === 0 ? 0 : parsed, raw };
 }
 
 /**
  * Angka dari sel Excel/teks (format Indonesia maupun internasional).
- * Negatif, NaN, dan Infinity dianggap tidak valid (`null`).
+ * Kosong, negatif, ambigu, tidak valid, NaN, dan Infinity mengembalikan `null`.
  */
-export function parseSpreadsheetNumber(value: unknown): number | null {
-  if (typeof value === "number") {
-    return Number.isFinite(value) && value >= 0 ? value : null;
-  }
-
-  if (typeof value !== "string") return null;
-
-  let text = stripCurrency(value);
-  if (text === "") return null;
-
-  let negative = false;
-  if (/^\(.*\)$/.test(text)) {
-    negative = true;
-    text = text.slice(1, -1);
-  }
-  if (text.includes("-")) negative = true;
-  text = text.replace(/[-+]/g, "");
-  text = text.replace(/[^\d.,]/g, "");
-  if (text === "" || !/\d/.test(text)) return null;
-  text = text.replace(/[.,]+$/, "");
-
-  const dots = (text.match(/\./g) ?? []).length;
-  const commas = (text.match(/,/g) ?? []).length;
-
-  let normalized: string;
-
-  if (dots > 0 && commas > 0) {
-    normalized =
-      text.lastIndexOf(",") > text.lastIndexOf(".")
-        ? text.replace(/\./g, "").replace(/,/g, ".")
-        : text.replace(/,/g, "");
-  } else if (commas > 0) {
-    const parts = text.split(",");
-    const last = parts[parts.length - 1];
-    const isThousands =
-      parts.length === 2 && last.length === 3 && parts[0] !== "0" && parts[0].length <= 3;
-
-    normalized = isThousands ? parts.join("") : `${parts.slice(0, -1).join("")}.${last}`;
-  } else if (dots > 1) {
-    normalized = text.replace(/\./g, "");
-  } else {
-    const [integerPart, decimalPart = ""] = text.split(".");
-    const isThousands =
-      decimalPart.length === 3 && integerPart !== "0" && integerPart.length <= 3;
-    normalized = isThousands ? integerPart + decimalPart : text;
-  }
-
-  const parsed = Number(normalized);
-  if (!Number.isFinite(parsed) || parsed < 0 || negative) return null;
-
-  return parsed;
+export function parseSpreadsheetNumber(
+  value: unknown,
+  mode: NumberFormatMode = "auto",
+): number | null {
+  const result = inspectSpreadsheetNumber(value, mode);
+  return result.status === "ok" ? result.value : null;
 }
 
 /** Satuan dari file → satuan yang dipakai aplikasi. */
@@ -394,22 +601,53 @@ export interface SubtotalCheck {
   rowNumber: number;
   label: string;
   fileValue: number | null;
+  fileStatus: NumberParseStatus;
+  fileRaw: string;
   computedValue: number;
   difference: number | null;
   /** Cakupan pembanding: blok subkelompok, seksi, atau seluruh dokumen. */
   scope: "block" | "section" | "document";
 }
 
+export function isUnreadableSubtotalCheck(check: SubtotalCheck): boolean {
+  return (
+    check.fileStatus === "ambiguous" ||
+    check.fileStatus === "negative" ||
+    check.fileStatus === "invalid"
+  );
+}
+
+export function hasSubtotalWarning(check: SubtotalCheck): boolean {
+  return (
+    isUnreadableSubtotalCheck(check) ||
+    (check.difference !== null && Math.abs(check.difference) > 0.5)
+  );
+}
+
+export interface ImportProblem {
+  rowNumber: number;
+  description: string;
+  reasons: string[];
+  hasAmbiguousNumber: boolean;
+  hasAmbiguousVolume: boolean;
+  hasAmbiguousPrice: boolean;
+}
+
 export interface ImportPlan {
   headerRowNumber: number;
   usesSecondHeaderRow: boolean;
   codeColumn: number | null;
+  numberFormat: NumberFormatConfig;
   rows: ClassifiedRow[];
   items: ClassifiedRow[];
   counts: Record<ImportRowKind, number>;
   total: number;
   ambiguous: ClassifiedRow[];
-  problems: { rowNumber: number; reasons: string[] }[];
+  ambiguousNumberCount: number;
+  ambiguousVolumeCount: number;
+  ambiguousMoneyCount: number;
+  unreadableSubtotalCount: number;
+  problems: ImportProblem[];
   notes: { rowNumber: number; message: string }[];
   subtotalChecks: SubtotalCheck[];
   skipped: { rowNumber: number; reason: string }[];
@@ -433,6 +671,8 @@ const LETTER_PATTERN = /^[A-Z]$/;
 const LETTER_DOT_PATTERN = /^[A-Z]\.$/;
 const LETTER_NUMBER_PATTERN = /^[A-Z]\.\d+(\.\d+)*$/;
 const NUMBER_PATTERN = /^\d{1,5}$/;
+const STRUCTURAL_DESCRIPTION_PATTERN =
+  /^(?:(?:I|II|III|IV|V|VI|VII|VIII|IX|X)\.?\s+|[A-Z]\.\s+|[A-Z]\.\d+(?:\.\d+)*\s+)\S/;
 
 function labelOf(code: string, description: string): string {
   if (code && description) return `${code} ${description}`.replace(/\s+/g, " ").trim();
@@ -443,6 +683,132 @@ function isNumericRow(volume: number | null, unitPrice: number | null): boolean 
   return volume !== null && unitPrice !== null;
 }
 
+function hasStructuralHeadingCode(code: string, description: string): boolean {
+  if (
+    ROMAN_PATTERN.test(code) ||
+    LETTER_PATTERN.test(code) ||
+    LETTER_DOT_PATTERN.test(code) ||
+    LETTER_NUMBER_PATTERN.test(code)
+  ) {
+    return true;
+  }
+  return !code && STRUCTURAL_DESCRIPTION_PATTERN.test(description);
+}
+
+function hasNonDashUnit(rawUnit: unknown): boolean {
+  if (rawUnit === null || rawUnit === undefined) return false;
+  const text = String(rawUnit).trim();
+  return text !== "" && !isBareDash(text);
+}
+
+/**
+ * Apakah baris tampak seperti percobaan baris item (memiliki data volume/harga,
+ * satuan item, atau nilai pada kolom Jumlah Harga yang dipetakan) yang bukan
+ * judul struktural bergaris datar ("-")?
+ */
+function isAttemptedItemRow(
+  code: string,
+  description: string,
+  rawVolume: unknown,
+  rawPrice: unknown,
+  rawUnit: unknown,
+  volumeResult: ParsedNumberResult,
+  priceResult: ParsedNumberResult,
+  rawAmount: unknown = null,
+  amountResult?: ParsedNumberResult,
+): boolean {
+  const structural = hasStructuralHeadingCode(code, description);
+  const hasUnit = hasNonDashUnit(rawUnit);
+  const volumeEmptyOrDash = volumeResult.status === "empty" || isBareDash(rawVolume);
+  const priceEmptyOrDash = priceResult.status === "empty" || isBareDash(rawPrice);
+
+  // Judul struktural yang menaruh "-" pada kolom volume/harga kosong tidak
+  // dianggap item bermasalah.
+  const isStructuralDashHeading =
+    structural &&
+    !hasUnit &&
+    volumeEmptyOrDash &&
+    priceEmptyOrDash &&
+    (isBareDash(rawVolume) || isBareDash(rawPrice));
+
+  if (isStructuralDashHeading) return false;
+
+  if (volumeResult.status !== "empty" || priceResult.status !== "empty") {
+    return true;
+  }
+
+  const hasAmountSignal =
+    amountResult !== undefined &&
+    amountResult.status !== "empty" &&
+    !isBareDash(rawAmount);
+
+  return !structural && (hasUnit || hasAmountSignal);
+}
+
+function describeNumberProblem(
+  fieldLabel: string,
+  result: ParsedNumberResult,
+  mode: NumberFormatMode,
+  role: NumericFieldRole,
+): string {
+  if (result.status === "empty") return `${fieldLabel} kosong`;
+  if (result.status === "negative") {
+    return `${fieldLabel} tidak boleh negatif ("${result.raw}")`;
+  }
+  if (result.status === "ambiguous") {
+    const selectorName =
+      role === "volume"
+        ? "Format angka teks — Volume"
+        : "Format angka teks — Harga & Jumlah";
+    return `${fieldLabel} "${result.raw}" ambigu (pemisah ribuan/desimal tidak jelas — pilih ${selectorName} atau ubah menjadi sel angka di Excel)`;
+  }
+
+  const looksNumericOnly =
+    /^(?:rp\.?|idr)?\s*[0-9.,\s-]+(?:\s+idr)?$/i.test(result.raw) && /\d/.test(result.raw);
+  if (mode !== "auto" && looksNumericOnly) {
+    const modeLabel =
+      mode === "id-ID" ? "Indonesia (1.234,56)" : "Internasional (1,234.56)";
+    return `${fieldLabel} "${result.raw}" tidak sesuai format ${modeLabel}`;
+  }
+
+  return `${fieldLabel} "${result.raw}" bukan angka yang valid`;
+}
+
+/**
+ * Baca nilai moneter pada baris subtotal/total menggunakan format moneter.
+ * Bila kolom Jumlah Harga dipetakan dan berisi teks ambigu/error/negatif,
+ * hasilnya dipertahankan apa adanya agar tidak diam-diam diabaikan atau
+ * tertimpa angka dari kolom lain (mis. kolom No).
+ */
+function inspectSubtotalValue(
+  row: unknown[],
+  mapping: ColumnMapping,
+  codeColumn: number | null,
+  amountResult: ParsedNumberResult,
+  moneyFormat: NumberFormatMode,
+): ParsedNumberResult {
+  if (mapping.amount !== null && amountResult.status !== "empty") {
+    return amountResult;
+  }
+
+  const skipColumns = new Set<number>();
+  if (codeColumn !== null) skipColumns.add(codeColumn);
+  if (mapping.description !== null) skipColumns.add(mapping.description);
+  if (mapping.unit !== null) skipColumns.add(mapping.unit);
+
+  for (let column = row.length - 1; column >= 0; column -= 1) {
+    if (skipColumns.has(column)) continue;
+    const cell = row[column];
+    if (isBareDash(cell)) continue;
+    const result = inspectSpreadsheetNumber(cell, moneyFormat);
+    if (result.status !== "empty") {
+      return result;
+    }
+  }
+
+  return { status: "empty", value: null, raw: "" };
+}
+
 /** Nilai sel pada kolom tertentu; `null` bila kolom tidak dipetakan. */
 function cellAt(row: unknown[], index: number | null): unknown {
   if (index === null) return null;
@@ -450,7 +816,38 @@ function cellAt(row: unknown[], index: number | null): unknown {
 }
 
 /**
- * Ada baris item (volume + harga numerik) di depan?
+ * Label cadangan dari kolom teks tak terpetakan di sebelah kiri kolom uraian
+ * (mis. baris subtotal/total ter-merge A:E yang teksnya berada di kolom A saat
+ * `codeColumn` tidak terdeteksi). Kolom di sebelah kanan uraian (mis. kolom
+ * catatan) tidak dipindai agar teks tak terkait tidak memicu klasifikasi total.
+ */
+export function fallbackMergedLabel(
+  row: unknown[],
+  mapping: ColumnMapping,
+  codeColumn: number | null,
+): string {
+  const mapped = new Set<number>();
+  if (codeColumn !== null) mapped.add(codeColumn);
+  for (const column of Object.values(mapping)) {
+    if (column !== null) mapped.add(column);
+  }
+
+  const limit =
+    mapping.description !== null
+      ? Math.min(mapping.description, row.length)
+      : row.length;
+
+  for (let column = 0; column < limit; column += 1) {
+    if (mapped.has(column)) continue;
+    const text = String(row[column] ?? "").trim();
+    if (text) return text;
+  }
+
+  return "";
+}
+
+/**
+ * Ada baris item (valid maupun bermasalah/ambigu) di depan?
  *
  * Dipakai membedakan **total seksi** (dokumen masih berlanjut) dari **rekap
  * akhir** (tidak ada item lagi setelah baris total).
@@ -459,15 +856,49 @@ function hasItemAhead(
   matrix: unknown[][],
   mapping: ColumnMapping,
   fromIndex: number,
+  codeColumn: number | null,
+  numberFormats: NumberFormatConfig,
   lookahead = 100,
 ): boolean {
   const limit = Math.min(matrix.length, fromIndex + 1 + lookahead);
 
   for (let index = fromIndex + 1; index < limit; index += 1) {
     const row = matrix[index] ?? [];
-    const volume = parseSpreadsheetNumber(cellAt(row, mapping.volume));
-    const unitPrice = parseSpreadsheetNumber(cellAt(row, mapping.unitPrice));
-    if (volume !== null && unitPrice !== null) return true;
+    const code = codeColumn === null ? "" : String(row[codeColumn] ?? "").trim();
+    const description = String(cellAt(row, mapping.description) ?? "").trim();
+    const rawVolume = cellAt(row, mapping.volume);
+    const rawPrice = cellAt(row, mapping.unitPrice);
+    const rawUnit = cellAt(row, mapping.unit);
+    const volumeResult = inspectSpreadsheetNumber(rawVolume, numberFormats.volume);
+    const priceResult = inspectSpreadsheetNumber(rawPrice, numberFormats.money);
+    const baseLabel = `${code} ${description}`.replace(/\s+/g, " ").trim();
+    const label =
+      baseLabel ||
+      (volumeResult.status !== "ok" && priceResult.status !== "ok"
+        ? fallbackMergedLabel(row, mapping, codeColumn)
+        : "");
+    if (
+      TOTAL_PATTERN.test(label) ||
+      SUBTOTAL_PATTERN.test(label) ||
+      ADMIN_PATTERN.test(label)
+    ) {
+      continue;
+    }
+
+    if (volumeResult.status === "ok" && priceResult.status === "ok") return true;
+    if (
+      isAttemptedItemRow(
+        code,
+        description,
+        rawVolume,
+        rawPrice,
+        rawUnit,
+        volumeResult,
+        priceResult,
+      )
+    ) {
+      return true;
+    }
   }
 
   return false;
@@ -543,6 +974,8 @@ export interface ClassifyOptions {
   maxRows?: number;
   overrides?: ImportOverrides;
   codeColumn?: number | null;
+  /** Format angka teks: satu mode untuk semua kolom, atau terpisah untuk volume dan moneter. */
+  numberFormat?: NumberFormatMode | Partial<NumberFormatConfig>;
 }
 
 /**
@@ -560,6 +993,7 @@ export function classifyImportMatrix(
 ): ImportPlan {
   const maxRows = options.maxRows ?? 1000;
   const overrides = options.overrides ?? {};
+  const numberFormat = resolveNumberFormatConfig(options.numberFormat);
   const { usesSecondRow } = resolveHeader(matrix, headerRowIndex);
   const codeColumn =
     options.codeColumn !== undefined
@@ -567,6 +1001,7 @@ export function classifyImportMatrix(
       : detectCodeColumn(matrix, Math.max(headerRowIndex, 0), mapping);
 
   const rows: ClassifiedRow[] = [];
+  const problems: ImportProblem[] = [];
   const skipped: { rowNumber: number; reason: string }[] = [];
   const notes: { rowNumber: number; message: string }[] = [];
   const subtotalChecks: SubtotalCheck[] = [];
@@ -613,9 +1048,12 @@ export function classifyImportMatrix(
     const rawPrice = cellAt(row, mapping.unitPrice);
     const rawUnit = cellAt(row, mapping.unit);
     const rawAmount = cellAt(row, mapping.amount);
-    const volume = parseSpreadsheetNumber(rawVolume);
-    const unitPrice = parseSpreadsheetNumber(rawPrice);
-    const fileAmount = parseSpreadsheetNumber(rawAmount);
+    const volumeResult = inspectSpreadsheetNumber(rawVolume, numberFormat.volume);
+    const priceResult = inspectSpreadsheetNumber(rawPrice, numberFormat.money);
+    const amountResult = inspectSpreadsheetNumber(rawAmount, numberFormat.money);
+    const volume = volumeResult.status === "ok" ? volumeResult.value : null;
+    const unitPrice = priceResult.status === "ok" ? priceResult.value : null;
+    const fileAmount = amountResult.status === "ok" ? amountResult.value : null;
 
     const mappedCells = [code, description, rawVolume, rawPrice, rawUnit, rawAmount];
     const isEmpty = mappedCells.every(
@@ -627,8 +1065,24 @@ export function classifyImportMatrix(
       continue;
     }
 
-    const label = `${code} ${description}`.replace(/\s+/g, " ").trim();
+    const baseLabel = `${code} ${description}`.replace(/\s+/g, " ").trim();
+    const label =
+      baseLabel ||
+      (volume === null && unitPrice === null
+        ? fallbackMergedLabel(row, mapping, codeColumn)
+        : "");
     const override = overrides[rowNumber];
+    const attemptedItem = isAttemptedItemRow(
+      code,
+      description,
+      rawVolume,
+      rawPrice,
+      rawUnit,
+      volumeResult,
+      priceResult,
+      rawAmount,
+      amountResult,
+    );
 
     let kind: ImportRowKind;
 
@@ -644,7 +1098,7 @@ export function classifyImportMatrix(
       kind = "note";
     } else if (isNumericRow(volume, unitPrice)) {
       kind = "item";
-    } else if (volume !== null || unitPrice !== null) {
+    } else if (attemptedItem) {
       kind = "problem";
     } else if (ROMAN_PATTERN.test(code) || LETTER_PATTERN.test(code)) {
       // Kode huruf tanpa titik bisa berarti kelompok baru (Banjar: A, B, C, D)
@@ -693,7 +1147,7 @@ export function classifyImportMatrix(
     // Total seksi vs rekap akhir: hanya dianggap rekap bila tidak ada item
     // lagi setelah baris total ini.
     if (kind === "total" && !override && recapFrom === null) {
-      if (!hasItemAhead(matrix, mapping, index)) {
+      if (!hasItemAhead(matrix, mapping, index, codeColumn, numberFormat)) {
         recapFrom = rowNumber + 1;
       }
     }
@@ -701,26 +1155,54 @@ export function classifyImportMatrix(
     const unitInfo = normalizeSpreadsheetUnit(rawUnit);
     const reasons: string[] = [];
 
+    if (kind === "item" && (volume === null || unitPrice === null)) {
+      kind = "problem";
+    }
+
     if (kind === "problem") {
       if (volume === null) {
         reasons.push(
-          rawVolume === null || String(rawVolume ?? "").trim() === ""
-            ? "Volume kosong"
-            : "Volume bukan angka yang valid",
+          describeNumberProblem("Volume", volumeResult, numberFormat.volume, "volume"),
         );
       }
       if (unitPrice === null) {
         reasons.push(
-          rawPrice === null || String(rawPrice ?? "").trim() === ""
-            ? "Harga satuan kosong"
-            : "Harga satuan bukan angka yang valid",
+          describeNumberProblem("Harga satuan", priceResult, numberFormat.money, "money"),
         );
+      }
+      if (
+        volumeResult.status === "empty" &&
+        priceResult.status === "empty" &&
+        amountResult.status !== "empty" &&
+        !isBareDash(rawAmount)
+      ) {
+        reasons.push(
+          amountResult.status === "ok"
+            ? `Jumlah harga ("${amountResult.raw}") diisi tanpa volume dan harga satuan`
+            : describeNumberProblem("Jumlah harga", amountResult, numberFormat.money, "money"),
+        );
+      }
+      if (!description) {
+        reasons.push("Uraian pekerjaan kosong");
       }
     }
 
     if (kind === "item" && !description) {
       kind = "problem";
       reasons.push("Uraian pekerjaan kosong");
+    }
+
+    if (kind === "problem") {
+      const hasAmbiguousVolume = volumeResult.status === "ambiguous";
+      const hasAmbiguousPrice = priceResult.status === "ambiguous";
+      problems.push({
+        rowNumber,
+        description: label,
+        reasons,
+        hasAmbiguousNumber: hasAmbiguousVolume || hasAmbiguousPrice,
+        hasAmbiguousVolume,
+        hasAmbiguousPrice,
+      });
     }
 
     const classified: ClassifiedRow = {
@@ -802,12 +1284,14 @@ export function classifyImportMatrix(
       documentSum += amount;
       sinceSubtotal += amount;
     } else if (kind === "subtotal" || kind === "total") {
-      const lastNumber = [...row]
-        .map((cell) => parseSpreadsheetNumber(cell))
-        .filter((value): value is number => value !== null)
-        .pop();
-
-      const fileValue = fileAmount ?? lastNumber ?? null;
+      const subtotalResult = inspectSubtotalValue(
+        row,
+        mapping,
+        codeColumn,
+        amountResult,
+        numberFormat.money,
+      );
+      const fileValue = subtotalResult.status === "ok" ? subtotalResult.value : null;
 
       // Cakupan pembanding mengikuti jenis barisnya:
       //  - subtotal lokal  → item dalam blok sejak subtotal sebelumnya;
@@ -817,11 +1301,16 @@ export function classifyImportMatrix(
       let computedValue: number;
 
       if (kind === "total") {
-        const reference = fileValue ?? 0;
-        const useSection =
-          Math.abs(reference - sectionSum) <= Math.abs(reference - documentSum);
-        scope = useSection ? "section" : "document";
-        computedValue = useSection ? sectionSum : documentSum;
+        if (fileValue === null) {
+          const isFinalTotal = recapFrom !== null || sectionSum === 0;
+          scope = isFinalTotal ? "document" : "section";
+          computedValue = isFinalTotal ? documentSum : sectionSum;
+        } else {
+          const useSection =
+            Math.abs(fileValue - sectionSum) <= Math.abs(fileValue - documentSum);
+          scope = useSection ? "section" : "document";
+          computedValue = useSection ? sectionSum : documentSum;
+        }
       } else {
         scope = "block";
         computedValue = sinceSubtotal;
@@ -831,6 +1320,8 @@ export function classifyImportMatrix(
         rowNumber,
         label,
         fileValue,
+        fileStatus: subtotalResult.status,
+        fileRaw: subtotalResult.raw,
         computedValue,
         difference: fileValue === null ? null : fileValue - computedValue,
         scope,
@@ -901,24 +1392,81 @@ export function classifyImportMatrix(
   }
 
   const items = rows.filter((row) => row.kind === "item");
+  const ambiguousVolumeCount = problems.filter((p) => p.hasAmbiguousVolume).length;
+  const ambiguousSubtotalCount = subtotalChecks.filter(
+    (check) => check.fileStatus === "ambiguous",
+  ).length;
+  const ambiguousMoneyCount =
+    problems.filter((p) => p.hasAmbiguousPrice).length + ambiguousSubtotalCount;
+  const unreadableSubtotalCount = subtotalChecks.filter(isUnreadableSubtotalCheck).length;
 
   return {
     headerRowNumber: headerRowIndex + 1,
     usesSecondHeaderRow: usesSecondRow,
     codeColumn,
+    numberFormat,
     rows,
     items,
     counts,
     total: items.reduce((sum, row) => sum + (row.amount ?? 0), 0),
     ambiguous: rows.filter((row) => row.ambiguous),
-    problems: rows
-      .filter((row) => row.kind === "problem")
-      .map((row) => ({ rowNumber: row.rowNumber, reasons: row.reasons })),
+    ambiguousNumberCount:
+      problems.filter((problem) => problem.hasAmbiguousNumber).length +
+      ambiguousSubtotalCount,
+    ambiguousVolumeCount,
+    ambiguousMoneyCount,
+    unreadableSubtotalCount,
+    problems,
     notes,
     subtotalChecks,
     skipped,
     truncated,
     structure: buildStructureTree(items),
+  };
+}
+
+export interface ImportGuardState {
+  canReview: boolean;
+  canImport: boolean;
+  requiresPartialConfirmation: boolean;
+  validItemCount: number;
+  problemRowCount: number;
+}
+
+/**
+ * Status keamanan sebelum mengeksekusi import:
+ * - Langkah tinjauan selalu dapat dibuka bila pemetaan lengkap, termasuk saat
+ *   0 item valid agar pengguna dapat memeriksa seluruh error.
+ * - Bila item valid dan baris bermasalah muncul bersamaan, konfirmasi eksplisit
+ *   pengguna wajib sebelum mengimpor item yang valid saja.
+ * - Bila 0 item valid, impor akhir tetap nonaktif.
+ */
+export function evaluateImportGuard(
+  plan: ImportPlan | null,
+  confirmedPartialImport: boolean,
+): ImportGuardState {
+  if (!plan) {
+    return {
+      canReview: false,
+      canImport: false,
+      requiresPartialConfirmation: false,
+      validItemCount: 0,
+      problemRowCount: 0,
+    };
+  }
+
+  const validItemCount = plan.items.length;
+  const problemRowCount = plan.problems.length;
+  const requiresPartialConfirmation = validItemCount > 0 && problemRowCount > 0;
+  const canImport =
+    validItemCount > 0 && (!requiresPartialConfirmation || confirmedPartialImport);
+
+  return {
+    canReview: true,
+    canImport,
+    requiresPartialConfirmation,
+    validItemCount,
+    problemRowCount,
   };
 }
 
@@ -1067,7 +1615,30 @@ interface XlsxModule {
   };
   utils: {
     sheet_to_json: <T>(sheet: unknown, options: Record<string, unknown>) => T[];
+    decode_range: (range: string) => {
+      s: { r: number; c: number };
+      e: { r: number; c: number };
+    };
+    decode_cell: (address: string) => { r: number; c: number };
   };
+}
+
+const EXCEL_ERROR_CODES: Record<number, string> = {
+  0x00: "#NULL!",
+  0x07: "#DIV/0!",
+  0x0f: "#VALUE!",
+  0x17: "#REF!",
+  0x1d: "#NAME?",
+  0x24: "#NUM!",
+  0x2a: "#N/A",
+};
+
+function formatExcelErrorCell(cell: { w?: unknown; v?: unknown }): string {
+  if (typeof cell.w === "string" && cell.w.trim() !== "") return cell.w.trim();
+  if (typeof cell.v === "number" && cell.v in EXCEL_ERROR_CODES) {
+    return EXCEL_ERROR_CODES[cell.v];
+  }
+  return "#ERROR!";
 }
 
 async function loadXlsx(): Promise<XlsxModule> {
@@ -1105,18 +1676,40 @@ export async function parseWorkbookFile(file: File): Promise<ParsedWorkbook> {
   let hasData = false;
 
   for (const name of workbook.SheetNames) {
-    const worksheet = workbook.Sheets[name];
+    const worksheet = workbook.Sheets[name] as Record<string, unknown> | undefined;
     const matrix = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
       header: 1,
       raw: true,
       defval: null,
       blankrows: true,
     });
-    sheets[name] = matrix.slice(0, MAX_SHEET_ROWS);
+    const limited = matrix.slice(0, MAX_SHEET_ROWS);
+
+    // `sheet_to_json(..., { raw: true })` mengubah sel error rumus (`t: "e"`,
+    // mis. #DIV/0!, #REF!, #VALUE!) menjadi `null`. Pulihkan teks errornya agar
+    // baris bermasalah tetap terdeteksi sebagai invalid, bukan kosong.
+    const ref = worksheet && typeof worksheet["!ref"] === "string" ? worksheet["!ref"] : null;
+    if (worksheet && ref) {
+      const range = XLSX.utils.decode_range(ref);
+      for (const [address, rawCell] of Object.entries(worksheet)) {
+        if (address.startsWith("!")) continue;
+        const cell = rawCell as { t?: unknown; v?: unknown; w?: unknown } | null;
+        if (!cell || cell.t !== "e") continue;
+        const pos = XLSX.utils.decode_cell(address);
+        const rowIndex = pos.r - range.s.r;
+        const colIndex = pos.c - range.s.c;
+        if (rowIndex < 0 || rowIndex >= limited.length || colIndex < 0) continue;
+        const targetRow = limited[rowIndex];
+        if (!targetRow) continue;
+        targetRow[colIndex] = formatExcelErrorCell(cell);
+      }
+    }
+
+    sheets[name] = limited;
 
     if (
       !hasData &&
-      matrix.some((row) =>
+      limited.some((row) =>
         row.some(
           (cell) => cell !== null && cell !== undefined && String(cell).trim() !== "",
         ),
