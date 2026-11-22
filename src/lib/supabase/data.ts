@@ -301,7 +301,10 @@ export async function fetchWorkspace(): Promise<WorkspaceData> {
   const projects = projectRows.map(mapProjectRow);
   const documents = documentRows.map(mapDocumentRow);
 
-  const items: Record<string, RabWorkItem[]> = {};
+  // Setelah semua halaman termuat, dokumen tanpa baris tetap punya daftar kosong.
+  const items: Record<string, RabWorkItem[]> = Object.fromEntries(
+    documents.map(({ id }) => [id, []]),
+  );
   for (const row of itemRows) {
     (items[row.rab_id] ??= []).push(mapWorkItemRow(row));
   }

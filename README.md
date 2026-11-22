@@ -364,12 +364,35 @@ scripts/
   `rab_documents`, `rab_items`); RLS memfilter hasilnya sesuai pemilik.
 - Nilai turunan — jumlah item, total per dokumen, total per proyek — selalu
   dihitung ulang dari data mentah (`recomputeWorkspace`).
-- Edit volume/harga memakai *optimistic update* dengan debounce 500 ms per baris,
-  dan tetap dikirim saat halaman disembunyikan/ditinggalkan agar perubahan
-  terakhir tidak hilang.
+- Edit volume/harga memakai *optimistic update* dengan debounce 500 ms per baris.
+  Perubahan metadata masuk ke antrean saat dikirim dari form atau saat edit
+  judul dikonfirmasi. Saat halaman disembunyikan, antrean mencoba mengirim item
+  dan metadata tanpa menunggu debounce. Patch terbaru menunggu respons dari
+  permintaan yang sedang berjalan. Metadata yang gagal mendapat paling banyak
+  satu percobaan otomatis selama masih ada waktu untuk menjalankan kode.
+- Antrean ada di memori. Penutupan paksa, tab yang dibekukan, atau koneksi yang
+  putus dapat menyebabkan perubahan yang belum dikonfirmasi hilang. Ekspor
+  perbandingan dan duplikasi menunggu penyimpanan. Jika penyimpanan gagal,
+  buka dokumen yang disebut di pesan dan pilih **Coba lagi** sebelum mengulang.
 - Menghapus proyek menghapus dokumen dan itemnya lewat `on delete cascade`.
 
+`sendBeacon()` memakai `POST` dan tidak dapat mengatur header autentikasi
+Supabase yang dipakai permintaan `PATCH`. `fetch` dengan `keepalive` dapat
+mempertahankan permintaan yang sudah dimulai dalam batas ukuran browser,
+tetapi tidak memastikan JavaScript sempat mengirim patch berikutnya setelah
+respons sebelumnya. Tindak lanjut untuk penutupan paksa adalah antrean lokal
+yang persisten per akun dan dokumen, dengan replay pada sesi berikutnya serta
+revisi di server untuk menolak patch lama dan kunci idempotensi untuk replay.
+
 ## Menguji
+
+Regresi autosave menggunakan `node:test`, TypeScript yang sudah terpasang,
+dan I/O tiruan. Jalankan dari root repositori dengan Node.js 20.11 atau lebih
+baru. Tes ini tidak memerlukan browser, jaringan, atau kredensial Supabase.
+
+```bash
+node --test scripts/autosave.test.mjs
+```
 
 ```bash
 npm run build                      # typecheck penuh

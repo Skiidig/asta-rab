@@ -67,9 +67,6 @@ interface ItemWrite {
   documentId: string;
   patch: Partial<RabWorkItem>;
   timer: ReturnType<typeof setTimeout> | null;
-  inFlight: boolean;
-  revision: number;
-  sentRevision: number | null;
   error: string | null;
   promise: Promise<void> | null;
 }
@@ -77,28 +74,32 @@ interface ItemWrite {
 interface DocumentWrite {
   documentId: string;
   patch: SaveQueueDocumentPatch;
-  inFlight: boolean;
-  revision: number;
-  sentRevision: number | null;
   error: string | null;
   promise: Promise<void> | null;
   result: RabDocument | null;
+  retriedOnHide: boolean;
 }
 
-type FailedOperation =
+type StructuralOperation =
   | {
       kind: "add";
       documentId: string;
       clientId: string;
       preset: SaveQueueItemPreset;
-      message: string;
     }
   | {
       kind: "delete";
       documentId: string;
       itemId: string;
-      message: string;
     };
+
+type FailedOperation = StructuralOperation & { message: string };
+
+function operationKey(operation: StructuralOperation): string {
+  return operation.kind === "add"
+    ? `add:${operation.clientId}`
+    : `delete:${operation.itemId}`;
+}
 
 export interface SaveQueueOptions {
   /** Debounce edit item (ms). */
@@ -136,9 +137,9 @@ export class SaveQueue {
 
   private readonly itemWrites = new Map<string, ItemWrite>();
   private readonly documentWrites = new Map<string, DocumentWrite>();
-  private readonly failedOps = new Map<string, FailedOperation>();
-  private readonly activeOps = new Map<string, number>();
-  private readonly retrying = new Set<string>();
+  private readonly failedOps = new Map<string, Map<string, FailedOperation>>();
+  private readonly activeOps = new Map<string, Map<string, Promise<unknown>>>();
+  private readonly retrying = new Map<string, Promise<void>>();
 
   constructor(
     ops: SaveQueueOperations,
@@ -158,16 +159,42 @@ export class SaveQueue {
     this.handlers.onChanged?.(documentId);
   }
 
-  private beginOperation(documentId: string): void {
-    this.activeOps.set(documentId, (this.activeOps.get(documentId) ?? 0) + 1);
-    this.changed(documentId);
-  }
+  private trackOperation<T>(operation: StructuralOperation, run: () => Promise<T>): Promise<T> {
+    const { documentId } = operation;
+    const key = operationKey(operation);
+    const active = this.activeOps.get(documentId) ?? new Map<string, Promise<unknown>>();
+    // A key identifies both the operation and its return type.
+    const existing = active.get(key) as Promise<T> | undefined;
+    if (existing) return existing;
 
-  private endOperation(documentId: string): void {
-    const next = (this.activeOps.get(documentId) ?? 1) - 1;
-    if (next <= 0) this.activeOps.delete(documentId);
-    else this.activeOps.set(documentId, next);
+    const request = Promise.resolve().then(async () => {
+      try {
+        const result = await run();
+        if (this.activeOps.get(documentId) === active) {
+          const failures = this.failedOps.get(documentId);
+          failures?.delete(key);
+          if (failures?.size === 0) this.failedOps.delete(documentId);
+        }
+        return result;
+      } catch (caught) {
+        if (this.activeOps.get(documentId) === active) {
+          const failures = this.failedOps.get(documentId) ?? new Map();
+          failures.set(key, { ...operation, message: messageOf(caught) });
+          this.failedOps.set(documentId, failures);
+        }
+        throw caught;
+      }
+    }).finally(() => {
+      active.delete(key);
+      if (active.size === 0 && this.activeOps.get(documentId) === active) {
+        this.activeOps.delete(documentId);
+      }
+      this.changed(documentId);
+    });
+    active.set(key, request);
+    this.activeOps.set(documentId, active);
     this.changed(documentId);
+    return request;
   }
 
   snapshot(documentId: string): DocumentSaveState {
@@ -182,12 +209,12 @@ export class SaveQueue {
 
     return deriveDocumentSaveState({
       items: entries.map((entry) => ({
-        inFlight: entry.inFlight,
+        inFlight: entry.promise !== null,
         hasPatch: Object.keys(entry.patch).length > 0,
         error: entry.error,
       })),
-      activeOps: this.activeOps.get(documentId) ?? 0,
-      failedMessage: this.failedOps.get(documentId)?.message ?? null,
+      activeOps: this.activeOps.get(documentId)?.size ?? 0,
+      failedMessage: this.failedOps.get(documentId)?.values().next().value?.message ?? null,
     });
   }
 
@@ -200,26 +227,21 @@ export class SaveQueue {
     itemId: string,
     patch: Partial<RabWorkItem>,
   ): void {
-    const existing = this.itemWrites.get(itemId);
-    if (existing?.timer) clearTimeout(existing.timer);
-
-    const inFlight = existing?.inFlight ?? false;
-    const timer = inFlight
-      ? null
-      : setTimeout(() => {
-          void this.flushItem(itemId);
-        }, this.debounceMs);
-
-    this.itemWrites.set(itemId, {
+    const entry = this.itemWrites.get(itemId) ?? {
       documentId,
-      patch: { ...(existing?.patch ?? {}), ...patch },
-      timer,
-      inFlight,
-      revision: (existing?.revision ?? 0) + 1,
-      sentRevision: existing?.sentRevision ?? null,
+      patch: {},
+      timer: null,
       error: null,
-      promise: existing?.promise ?? null,
-    });
+      promise: null,
+    };
+    if (entry.timer) clearTimeout(entry.timer);
+
+    entry.patch = { ...entry.patch, ...patch };
+    entry.error = null;
+    entry.timer = entry.promise
+      ? null
+      : setTimeout(() => { void this.flushItem(itemId); }, this.debounceMs);
+    this.itemWrites.set(itemId, entry);
 
     this.changed(documentId);
   }
@@ -232,56 +254,41 @@ export class SaveQueue {
     this.changed(entry.documentId);
   }
 
-  async flushItem(itemId: string): Promise<void> {
+  flushItem(itemId: string): Promise<void> {
     const entry = this.itemWrites.get(itemId);
-    if (!entry || entry.inFlight) {
-      await entry?.promise;
-      return;
-    }
+    if (!entry) return Promise.resolve();
+    if (entry.promise) return entry.promise;
 
     if (entry.timer) {
       clearTimeout(entry.timer);
       entry.timer = null;
     }
 
-    entry.inFlight = true;
     entry.error = null;
-    entry.sentRevision = entry.revision;
-
-    const documentId = entry.documentId;
-    const sentPatch = { ...entry.patch };
-    this.changed(documentId);
-
-    const request = (async () => {
-      try {
-        await this.ops.writeItem(itemId, sentPatch);
-
-        // Entri bisa sudah diganti oleh edit baru selama permintaan berjalan.
-        const current = this.itemWrites.get(itemId) ?? entry;
-        current.inFlight = false;
-        current.promise = null;
-
-        if (current.revision === current.sentRevision) {
-          this.itemWrites.delete(itemId);
-        } else if (!current.timer) {
-          // Ada edit yang lebih baru saat permintaan berjalan.
-          current.timer = setTimeout(() => {
-            void this.flushItem(itemId);
-          }, 0);
+    entry.promise = Promise.resolve().then(async () => {
+      while (this.itemWrites.get(itemId) === entry) {
+        const sentPatch = entry.patch;
+        entry.patch = {};
+        try {
+          await this.ops.writeItem(itemId, sentPatch);
+        } catch (caught) {
+          // Simpan patch yang gagal, dengan nilai terbaru tetap diutamakan.
+          entry.patch = { ...sentPatch, ...entry.patch };
+          entry.error = messageOf(caught);
+          break;
         }
-        this.changed(current.documentId);
-      } catch (caught) {
-        const current = this.itemWrites.get(itemId) ?? entry;
-        current.inFlight = false;
-        current.promise = null;
-        // Patch terbaru dipertahankan agar dapat dicoba ulang.
-        current.error = messageOf(caught);
-        this.changed(current.documentId);
-      }
-    })();
 
-    entry.promise = request;
-    await request;
+        if (this.itemWrites.get(itemId) !== entry) break;
+        if (Object.keys(entry.patch).length === 0) {
+          this.itemWrites.delete(itemId);
+          break;
+        }
+      }
+      entry.promise = null;
+      this.changed(entry.documentId);
+    });
+    this.changed(entry.documentId);
+    return entry.promise;
   }
 
   /** Kirim semua perubahan satu dokumen dan tunggu hingga selesai. */
@@ -290,42 +297,21 @@ export class SaveQueue {
       const items = [...this.itemWrites.entries()].filter(
         ([, entry]) => entry.documentId === documentId,
       );
-      const documentWrite = this.documentWrites.get(documentId);
+      const active = this.activeOps.get(documentId)?.values() ?? [];
+      const retry = this.retrying.get(documentId);
 
-      if (items.length === 0 && !documentWrite?.error && !documentWrite?.inFlight) {
-        return;
-      }
+      const results = await Promise.allSettled([
+        ...items.map(([itemId]) => this.flushItem(itemId)),
+        this.flushDocumentWrite(documentId),
+        ...active,
+        ...(retry ? [retry] : []),
+      ]);
 
-      for (const [, entry] of items) {
-        if (entry.timer) {
-          clearTimeout(entry.timer);
-          entry.timer = null;
-        }
-      }
-
-      await Promise.all(
-        items.map(([itemId, entry]) => entry.promise ?? this.flushItem(itemId)),
-      );
-
-      if (documentWrite?.error) {
-        documentWrite.error = null;
-        await this.flushDocumentWrite(documentId);
-      }
-
-      const remainingItems = [...this.itemWrites.values()].filter(
-        (entry) => entry.documentId === documentId,
-      );
-      const currentDocument = this.documentWrites.get(documentId);
-
-      if (remainingItems.length === 0 && !currentDocument?.error && !currentDocument?.inFlight) {
-        return;
-      }
-
-      const failure =
-        remainingItems.find((entry) => entry.error)?.error ??
-        currentDocument?.error ??
-        null;
-      if (failure) throw new Error(failure);
+      const state = this.snapshot(documentId);
+      if (state.phase === "error") throw new Error(state.message);
+      const rejected = results.find((result) => result.status === "rejected");
+      if (rejected) throw rejected.reason;
+      if (state.phase === "saved") return;
     }
 
     throw new Error("Perubahan dokumen belum selesai disimpan.");
@@ -347,27 +333,18 @@ export class SaveQueue {
     const entry: DocumentWrite = existing ?? {
       documentId,
       patch: {},
-      inFlight: false,
-      revision: 0,
-      sentRevision: null,
       error: null,
       promise: null,
       result: null,
+      retriedOnHide: false,
     };
 
     entry.patch = { ...entry.patch, ...patch };
-    entry.revision += 1;
     entry.error = null;
+    entry.retriedOnHide = false;
     this.documentWrites.set(documentId, entry);
-    this.changed(documentId);
 
-    if (entry.inFlight) {
-      await entry.promise;
-    }
-
-    if (entry.inFlight || entry.revision !== entry.sentRevision) {
-      await this.flushDocumentWrite(documentId);
-    }
+    await this.flushDocumentWrite(documentId);
 
     return this.documentWrites.get(documentId)?.result ?? entry.result;
   }
@@ -376,56 +353,38 @@ export class SaveQueue {
     return this.documentWrites.get(documentId)?.error ?? null;
   }
 
-  private async flushDocumentWrite(
-    documentId: string,
-    force = false,
-  ): Promise<void> {
+  private flushDocumentWrite(documentId: string): Promise<void> {
     const entry = this.documentWrites.get(documentId);
-    if (!entry) return;
+    if (!entry) return Promise.resolve();
+    if (entry.promise) return entry.promise;
 
-    if (entry.inFlight) {
-      await entry.promise;
-      if (entry.error) return;
-      if (entry.revision !== entry.sentRevision) {
-        await this.flushDocumentWrite(documentId);
-      }
-      return;
-    }
-
-    // `force` dipakai retry: revisi boleh sama, tetapi patch harus dikirim lagi.
-    if (!force && !entry.error && entry.revision === entry.sentRevision) return;
-
-    const sentRevision = entry.revision;
-    const sentPatch = { ...entry.patch };
-    entry.inFlight = true;
     entry.error = null;
-    entry.sentRevision = sentRevision;
-    this.changed(documentId);
-
-    const request = (async () => {
-      try {
-        const updated = await this.ops.writeDocument(documentId, sentPatch);
-        entry.result = updated;
-        entry.inFlight = false;
-        entry.promise = null;
-        this.handlers.onDocumentUpdated?.(updated);
-
-        if (entry.revision === sentRevision) {
-          this.documentWrites.delete(documentId);
-        } else {
-          await this.flushDocumentWrite(documentId);
+    entry.promise = Promise.resolve().then(async () => {
+      while (this.documentWrites.get(documentId) === entry) {
+        const sentPatch = entry.patch;
+        entry.patch = {};
+        try {
+          const updated = await this.ops.writeDocument(documentId, sentPatch);
+          if (this.documentWrites.get(documentId) !== entry) break;
+          entry.result = updated;
+          this.handlers.onDocumentUpdated?.(updated);
+        } catch (caught) {
+          entry.patch = { ...sentPatch, ...entry.patch };
+          entry.error = messageOf(caught);
+          break;
         }
-        this.changed(documentId);
-      } catch (caught) {
-        entry.inFlight = false;
-        entry.promise = null;
-        entry.error = messageOf(caught);
-        this.changed(documentId);
-      }
-    })();
 
-    entry.promise = request;
-    await request;
+        if (this.documentWrites.get(documentId) !== entry) break;
+        if (Object.keys(entry.patch).length === 0) {
+          this.documentWrites.delete(documentId);
+          break;
+        }
+      }
+      entry.promise = null;
+      this.changed(documentId);
+    });
+    this.changed(documentId);
+    return entry.promise;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -437,140 +396,97 @@ export class SaveQueue {
     preset: SaveQueueItemPreset = {},
   ): Promise<RabWorkItem> {
     const clientId = preset.id ?? createClientId();
-    const withId: SaveQueueItemPreset = { ...preset, id: clientId };
-
-    this.beginOperation(documentId);
-    try {
-      const item = await this.ops.createItem(documentId, withId);
-      const failure = this.failedOps.get(documentId);
-      if (failure?.kind === "add" && failure.clientId === clientId) {
-        this.failedOps.delete(documentId);
-      }
-      return item;
-    } catch (caught) {
-      this.failedOps.set(documentId, {
-        kind: "add",
-        documentId,
-        clientId,
-        preset: withId,
-        message: messageOf(caught),
-      });
-      throw caught;
-    } finally {
-      this.endOperation(documentId);
+    const operation = {
+      kind: "add" as const,
+      documentId,
+      clientId,
+      preset: { ...preset, id: clientId },
+    };
+    const failed = this.failedOps.get(documentId)?.get(operationKey(operation));
+    if (failed?.kind === "add") {
+      return this.trackOperation(failed, () => this.recoverItem(failed));
     }
+    return this.trackOperation(operation, () => this.ops.createItem(documentId, operation.preset));
   }
 
   async deleteItem(documentId: string, itemId: string): Promise<void> {
-    this.discardItem(itemId);
-    this.beginOperation(documentId);
-    try {
+    return this.trackOperation({ kind: "delete", documentId, itemId }, async () => {
       await this.ops.deleteItem(itemId);
-      const failure = this.failedOps.get(documentId);
-      if (failure?.kind === "delete" && failure.itemId === itemId) {
-        this.failedOps.delete(documentId);
-      }
-    } catch (caught) {
-      this.failedOps.set(documentId, {
-        kind: "delete",
-        documentId,
-        itemId,
-        message: messageOf(caught),
-      });
-      throw caught;
-    } finally {
-      this.endOperation(documentId);
-    }
+      this.discardItem(itemId);
+      this.handlers.onItemDeleted?.(documentId, itemId);
+    });
   }
 
   /* ---------------------------------------------------------------------- */
   /*  Retry                                                                 */
   /* ---------------------------------------------------------------------- */
 
-  async retry(documentId: string): Promise<void> {
-    if (this.retrying.has(documentId)) return;
-    this.retrying.add(documentId);
+  retry(documentId: string): Promise<void> {
+    const existing = this.retrying.get(documentId);
+    if (existing) return existing;
 
-    try {
+    const request = Promise.resolve().then(async () => {
+      if (this.retrying.get(documentId) !== request) return;
+      const failures = this.failedOps.get(documentId);
+      const operations = [...(failures?.entries() ?? [])];
       for (const [itemId, entry] of [...this.itemWrites.entries()]) {
         if (entry.documentId !== documentId || !entry.error) continue;
-        entry.error = null;
-        this.changed(documentId);
         await this.flushItem(itemId);
       }
 
-      const documentWrite = this.documentWrites.get(documentId);
-      if (documentWrite?.error) {
-        documentWrite.error = null;
-        this.changed(documentId);
-        await this.flushDocumentWrite(documentId, true);
+      if (this.retrying.get(documentId) !== request) return;
+      if (this.documentWrites.get(documentId)?.error) {
+        await this.flushDocumentWrite(documentId);
       }
 
-      const failure = this.failedOps.get(documentId);
-      if (failure) await this.retryOperation(failure);
-    } finally {
-      this.retrying.delete(documentId);
+      for (const [key, failure] of operations) {
+        if (this.failedOps.get(documentId)?.get(key) !== failure) continue;
+        try {
+          if (failure.kind === "delete") {
+            await this.deleteItem(documentId, failure.itemId);
+          } else {
+            await this.trackOperation(failure, () => this.recoverItem(failure));
+          }
+        } catch {
+          // Kegagalan tetap tercatat per operasi. Teruskan operasi lain.
+        }
+      }
+
+      const state = this.snapshot(documentId);
+      if (state.phase === "error") throw new Error(state.message);
+    }).finally(() => {
+      if (this.retrying.get(documentId) === request) this.retrying.delete(documentId);
       this.changed(documentId);
-    }
+    });
+    this.retrying.set(documentId, request);
+    return request;
   }
 
-  private async retryOperation(failure: FailedOperation): Promise<void> {
-    const documentId = failure.documentId;
-    this.beginOperation(documentId);
-
-    try {
-      if (failure.kind === "delete") {
-        await this.ops.deleteItem(failure.itemId);
-        this.handlers.onItemDeleted?.(documentId, failure.itemId);
-        this.failedOps.delete(documentId);
-        return;
+  private async recoverItem(
+    operation: Extract<StructuralOperation, { kind: "add" }>,
+  ): Promise<RabWorkItem> {
+    const { clientId, documentId, preset } = operation;
+    // Kegagalan pemeriksaan ID membatalkan insert ulang.
+    const existing = await this.ops.fetchItem(clientId);
+    if (existing) {
+      if (existing.documentId !== documentId) {
+        throw new Error("ID item yang sama sudah dipakai dokumen lain.");
       }
-
-      // Tambah: cek identitas dulu. Kegagalan pemeriksaan = jangan insert buta.
-      const existing = await this.ops.fetchItem(failure.clientId);
-      if (existing) {
-        if (existing.documentId !== documentId) {
-          throw new Error("ID item yang sama sudah dipakai dokumen lain.");
-        }
-        this.handlers.onItemRecovered?.(documentId, existing.item);
-        this.failedOps.delete(documentId);
-        return;
-      }
-
-      try {
-        const item = await this.ops.createItem(documentId, failure.preset);
-        this.handlers.onItemRecovered?.(documentId, item);
-        this.failedOps.delete(documentId);
-      } catch (caught) {
-        // Bisa jadi insert sebenarnya berhasil; periksa identitas sekali lagi.
-        const again = await this.ops.fetchItem(failure.clientId);
-        if (again) {
-          if (again.documentId !== documentId) throw caught;
-          this.handlers.onItemRecovered?.(documentId, again.item);
-          this.failedOps.delete(documentId);
-          return;
-        }
-        const current = this.failedOps.get(documentId);
-        if (current) {
-          this.failedOps.set(documentId, {
-            ...current,
-            message: messageOf(caught),
-          });
-        }
-        throw caught;
-      }
-    } catch (caught) {
-      const current = this.failedOps.get(documentId);
-      if (current && current.kind === failure.kind) {
-        this.failedOps.set(documentId, {
-          ...current,
-          message: messageOf(caught),
-        });
-      }
-      throw caught;
-    } finally {
-      this.endOperation(documentId);
+      this.handlers.onItemRecovered?.(documentId, existing.item);
+      return existing.item;
     }
+
+    let item: RabWorkItem;
+    try {
+      item = await this.ops.createItem(documentId, preset);
+    } catch (caught) {
+      // Respons dapat hilang setelah server menyelesaikan insert.
+      const again = await this.ops.fetchItem(clientId);
+      if (again?.documentId !== documentId) throw caught;
+      item = again.item;
+    }
+    this.handlers.onItemRecovered?.(documentId, item);
+    return item;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -586,6 +502,7 @@ export class SaveQueue {
     this.documentWrites.delete(documentId);
     this.failedOps.delete(documentId);
     this.activeOps.delete(documentId);
+    this.retrying.delete(documentId);
   }
 
   clearAll(): void {
@@ -596,16 +513,27 @@ export class SaveQueue {
     this.documentWrites.clear();
     this.failedOps.clear();
     this.activeOps.clear();
+    this.retrying.clear();
   }
 
-  /** Kirim semua patch item yang belum terkirim (best effort, saat halaman ditutup). */
+  /** Lewati debounce jika halaman disembunyikan, tanpa membuang antrean. */
   flushAllBestEffort(): void {
     for (const [itemId, entry] of this.itemWrites) {
-      if (entry.timer) clearTimeout(entry.timer);
-      if (!entry.inFlight && !entry.error) {
-        void this.ops.writeItem(itemId, entry.patch).catch(() => {});
-      }
+      if (!entry.error) void this.flushItem(itemId);
     }
-    this.itemWrites.clear();
+    for (const [documentId, entry] of this.documentWrites) {
+      void this.flushDocumentBestEffort(documentId, entry);
+    }
+  }
+
+  private async flushDocumentBestEffort(documentId: string, entry: DocumentWrite): Promise<void> {
+    if (!entry.error) await this.flushDocumentWrite(documentId);
+
+    // Kedua event lifecycle dapat menunggu promise yang sama. Coba ulang
+    // patch metadata yang gagal sekali selama browser masih menjalankan kode.
+    if (this.documentWrites.get(documentId) === entry && entry.error && !entry.retriedOnHide) {
+      entry.retriedOnHide = true;
+      await this.flushDocumentWrite(documentId);
+    }
   }
 }

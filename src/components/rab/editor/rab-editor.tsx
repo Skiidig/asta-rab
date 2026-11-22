@@ -29,6 +29,7 @@ import {
   buildGroupPlacementOptions,
   type HierarchyContext,
 } from "@/lib/rab-hierarchy";
+import type { WorkItemPreset } from "@/lib/supabase/data";
 import type { AhspAnalysisDetail, CatalogItem, RabWorkItem } from "@/types";
 /**
  * RAB editor container.
@@ -53,6 +54,7 @@ export function RabEditor({ documentId }: { documentId: string }) {
   const [ahspPickerOpen, setAhspPickerOpen] = useState(false);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
+  const addingRef = useRef(false);
   const router = useRouter();
   // Perubahan judul terakhir; ditunggu sebelum dialog duplikasi dibuka agar
   // judul salinan berasal dari judul sumber yang sudah tersimpan.
@@ -93,6 +95,21 @@ export function RabEditor({ documentId }: { documentId: string }) {
     if (target) setPendingDelete(target);
   }, []);
 
+  const addWhileIdle = useCallback(
+    async (buildPreset: () => WorkItemPreset) => {
+      // Tahan klik berikutnya tanpa menunggu render ulang.
+      if (addingRef.current) return false;
+      addingRef.current = true;
+      try {
+        await addWorkItem(documentId, buildPreset());
+        return true;
+      } finally {
+        addingRef.current = false;
+      }
+    },
+    [addWorkItem, documentId],
+  );
+
   /**
    * Tambah item. Bila dipanggil dari tombol "+" pada heading, item mewarisi
    * GROUP/SUBGROUP/ITEM GROUP heading tersebut dan disisipkan di dalamnya;
@@ -101,14 +118,14 @@ export function RabEditor({ documentId }: { documentId: string }) {
   const handleAddItem = useCallback(
     async (context?: HierarchyContext) => {
       try {
-        await addWorkItem(documentId, buildAddItemPlacement(itemsRef.current, context));
+        await addWhileIdle(() => buildAddItemPlacement(itemsRef.current, context));
       } catch (caught) {
         toast.error("Gagal menambah pekerjaan", {
           description: toErrorMessage(caught),
         });
       }
     },
-    [addWorkItem, documentId],
+    [addWhileIdle],
   );
 
   if (!document) {
@@ -154,10 +171,11 @@ export function RabEditor({ documentId }: { documentId: string }) {
     try {
       // Item dari katalog ikut konteks kelompok terakhir agar tidak jatuh di
       // luar hierarki dokumen.
-      await addWorkItem(documentId, {
+      const added = await addWhileIdle(() => ({
         ...catalogItemToWorkItemPreset(item),
         ...buildAddItemPlacement(items),
-      });
+      }));
+      if (!added) return;
       setPickerOpen(false);
       toast.success("Item ditambahkan dari katalog", {
         description: `${item.name} · ${item.unit}`,
@@ -180,11 +198,11 @@ export function RabEditor({ documentId }: { documentId: string }) {
     context?: HierarchyContext,
   ) {
     try {
-      const preset = {
+      const added = await addWhileIdle(() => ({
         ...ahspAnalysisToWorkItemPreset(analysis),
         ...buildAddItemPlacement(items, context),
-      };
-      await addWorkItem(documentId, preset);
+      }));
+      if (!added) return;
       setAhspPickerOpen(false);
       toast.success("Pekerjaan ditambahkan dari AHSP", {
         description: `${analysis.name} · per ${analysis.unit}`,

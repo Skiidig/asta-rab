@@ -76,9 +76,8 @@ function percentNote(row: ComparisonRow): string {
 /**
  * Dialog perbandingan dua dokumen RAB dalam proyek yang sama.
  *
- * Hanya membaca state yang sudah dimuat (termasuk hasil pagination); tidak ada
- * penulisan ke database. Perhitungan memakai `summarizeGroups` — sumber yang
- * sama dengan rekap editor — lalu `compareGroupSummaries` untuk pencocokan.
+ * Pratinjau memakai state yang sudah dimuat. Ekspor menunggu antrean kedua
+ * dokumen lalu menghitung perbandingan ulang dari snapshot yang tersimpan.
  */
 export function CompareDocumentsDialog({
   document,
@@ -87,7 +86,7 @@ export function CompareDocumentsDialog({
   document: RabDocumentDetail;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { documents, getDocumentDetail, flushDocumentWrites } = useData();
+  const { documents, getDocumentDetail, getComparisonSnapshot } = useData();
 
   const [baselineId, setBaselineId] = useState(document.id);
   const [comparisonId, setComparisonId] = useState(() => {
@@ -140,13 +139,13 @@ export function CompareDocumentsDialog({
     setExporting(true);
 
     try {
-      // Pastikan perubahan kedua dokumen sudah tersimpan sebelum mengambil
-      // snapshot; kegagalan membatalkan ekspor (tidak ada data parsial).
+      let baselineDetail: RabDocumentDetail | undefined;
+      let comparisonDetail: RabDocumentDetail | undefined;
       try {
-        await Promise.all([
-          flushDocumentWrites(baselineDoc.id),
-          flushDocumentWrites(comparisonDoc.id),
-        ]);
+        [baselineDetail, comparisonDetail] = await getComparisonSnapshot(
+          baselineDoc.id,
+          comparisonDoc.id,
+        );
       } catch (caught) {
         toast.error("Perubahan belum tersimpan", {
           description: `Ekspor dibatalkan. ${toErrorMessage(caught)}`,
@@ -154,12 +153,16 @@ export function CompareDocumentsDialog({
         return;
       }
 
-      const baselineDetail = getDocumentDetail(baselineDoc.id);
-      const comparisonDetail = getDocumentDetail(comparisonDoc.id);
       if (!baselineDetail || !comparisonDetail) {
         toast.error("Gagal membuat Excel perbandingan", {
           description:
             "Dokumen tidak dapat dimuat. Muat ulang halaman lalu coba lagi.",
+        });
+        return;
+      }
+      if (baselineDetail.projectId !== comparisonDetail.projectId) {
+        toast.error("Gagal membuat Excel perbandingan", {
+          description: "Pilih kembali dua dokumen dari proyek yang sama.",
         });
         return;
       }
