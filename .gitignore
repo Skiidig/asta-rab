@@ -51,3 +51,16 @@ next-env.d.ts
 # Backup rilis lokal (jangan pernah masuk Git)
 /artifacts/release/*
 !/artifacts/release/.gitkeep
+
+# Konfigurasi tool AI & editor lokal
+.commandcode/
+.cursor/
+.claude/
+.vscode/
+
+# File kunci, log, & folder sementara tambahan
+*.key
+serviceAccountKey.json
+*.log
+/tmp/
+/dist/
