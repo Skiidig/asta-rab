@@ -1,476 +1,293 @@
 # RAB Mini
 
-**Versi rilis: v1.0.1.** Catatan rilis ada di
-[`docs/release-v1.0.1.md`](docs/release-v1.0.1.md). Panduan backup, cleanup,
-dan deployment database v1.0.0 tetap tersedia di
-[`docs/release-v1.0.0.md`](docs/release-v1.0.0.md).
+**Construction Budget Estimation Web App (*Rencana Anggaran Biaya*)**
 
-Aplikasi web untuk membantu kontraktor dan arsitek menyusun serta mengelola
-**Rencana Anggaran Biaya (RAB)**.
+[![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![Tailwind CSS v4](https://img.shields.io/badge/Tailwind_CSS-v4-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
+[![Supabase Auth + RLS](https://img.shields.io/badge/Supabase-Auth_%2B_RLS-3ECF8E?logo=supabase&logoColor=white)](https://supabase.com)
+[![Live App](https://img.shields.io/badge/Live-asta--rab.vercel.app-2563EB)](https://asta-rab.vercel.app/)
 
-Data proyek, dokumen RAB, dan item pekerjaan disimpan di **Supabase** (Postgres)
-dan dilindungi per pengguna lewat **Supabase Auth + Row Level Security**. Setiap
-pengguna hanya dapat melihat dan mengubah datanya sendiri.
+RAB Mini is a web application built for contractors, architects, and project estimators to create, organize, compare, and export **Rencana Anggaran Biaya (RAB)** — Indonesian construction cost estimates — with database-enforced per-user data isolation.
 
-## Tech stack
+Every project, RAB document, line item, price catalog entry, and unit price analysis (**AHSP**) is stored in **Supabase Postgres** and protected by **Supabase Auth + Row Level Security (RLS)** so each authenticated user can only read and modify their own workspace.
 
-- [Next.js 16](https://nextjs.org) (App Router, Turbopack, Cache Components)
-- TypeScript
-- Tailwind CSS v4
-- shadcn/ui-style components built on [Base UI](https://base-ui.com)
-- Lucide Icons
-- [Supabase](https://supabase.com) (`@supabase/supabase-js`) — Postgres, Auth, RLS
+**Live Production App:** [https://asta-rab.vercel.app/](https://asta-rab.vercel.app/)
 
-## Struktur folder
+![RAB Mini Dashboard — Light Theme (synthetic demo data)](docs/media/dashboard-light.png)
+*Workspace overview displaying synthetic Indonesian construction projects, aggregated budget totals, and recent RAB documents.*
 
-- `src/` — kode aplikasi (App Router, komponen, library).
-- `src/assets/branding/` — sumber dan varian tampilan logo:
-  - `rev/astaworks.png` — **sumber asli terbaru** (wordmark + tagline).
-  - `rev/astaworks-arrow.png` — sumber arrow transparan.
-  - `astaworks-full.png` / `astaworks-full-light.png` — untuk login/pratinjau.
-  - `astaworks-wordmark.png` / `astaworks-wordmark-light.png` — untuk sidebar.
-  - `astaworks-arrow.png` — area ringkas/mobile.
-  Varian dibuat dengan `python scripts/make-logo-variants.py` (butuh Pillow,
-  hanya untuk perawatan aset). File sumber di `rev/` tidak diubah.
-- `public/` — aset publik statis.
-- `scripts/` — smoke test Supabase dan utilitas QA:
-  - `node scripts/run-qa.mjs scripts/smoke-crud.mjs` menjalankan skrip dan
-    menyimpan log ke `artifacts/qa/logs/`.
-  - `scripts/qa-paths.mjs` menyediakan helper path artefak.
-- `artifacts/qa/screenshots/` — screenshot pengujian browser.
-- `artifacts/qa/exports/` — workbook/PDF hasil pengujian.
-- `artifacts/qa/logs/` — log pengujian.
-- `supabase/` — skema dan migration SQL.
-- `reference-files/` — berkas contoh untuk pengujian impor.
+---
 
-Isi `artifacts/qa/*` diabaikan Git (kecuali `.gitkeep`); aset di
-`src/assets/branding` tetap terlacak.
+## Key Features
 
-## Mengganti logo
+### Project & RAB Document Management
+- **Multi-project workspace:** Track construction projects by client, location, start date, and status (`planning`, `active`, `completed`, `on-hold`) with table and card views, search, and status filters.
+- **Multiple RAB revisions per project:** Create, rename, duplicate, and compare RAB documents within or across projects.
+- **Document comparison:** Compare two RAB documents at the top-level work group (`GROUP`) level with delta amounts, percentage variance, matched/unpaired indicators, and PDF/Excel comparison export.
 
-Sumber asli ada di `src/assets/branding/rev/` (`astaworks.png` dan
-`astaworks-arrow.png`). Setelah mengganti berkas di sana, jalankan
-`python scripts/make-logo-variants.py` untuk menghasilkan ulang varian full,
-wordmark, dan arrow (versi gelap/terang) di `src/assets/branding/`. Restart dev
-server dan hard-refresh halaman. Komponen
-[`BrandMark`](src/components/layout/brand-mark.tsx) adalah satu-satunya tempat
-import logo; tidak ada kotak putih, teks “RAB Mini”, atau `object-cover`.
-Varian dipilih lewat `data-theme`, jadi tidak perlu filter/invert.
+### Interactive Hierarchical RAB Editor
+- **Structured work breakdown:** Supports flat lists as well as 3-level construction hierarchies (`GROUP` → `SUBGROUP` → `ITEM GROUP`) with collapsible sections, group subtotals, and instant item search.
+- **Real-time calculations:** Automatically computes line-item totals (`volume × unit price`) and document/project rollups from a single shared pure calculation module (`src/lib/rab-calc.ts`).
+- **Ordered autosave & safe recovery:** Optimistic inline edits are debounced per row and serialized through an in-memory save queue (`src/lib/save-queue.ts`) with client-generated UUIDs for idempotent item creation retries, lifecycle flush on page hide, and explicit retry recovery on network errors.
 
-Favicon aplikasi memakai aset arrow yang sama:
-`src/app/icon.png` (256×256, transparan) dan `src/app/favicon.ico` (16–256 px).
-Favicon bawaan Next.js sudah dihapus, jadi tab browser menampilkan arrow
-Astaworks. Jika masih terlihat ikon lama, lakukan hard refresh/incognito karena
-browser menyimpan favicon di cache.
+### Hardened Excel Import & Formula-Preserving Export
+- **Import from `.xlsx` / `.xls`:** Detects single- and two-row headers, maps common Indonesian and English column aliases automatically, preserves hierarchical group headings, and previews validation results before creating a new RAB document (existing documents are never overwritten).
+- **Strict, field-aware numeric parsing:** Reads native Excel numeric cells directly and allows independent text-locale selection (`Auto (strict)`, `Indonesian`, `International`) for **Volume** vs. **Price & Amount** columns — preventing silent misreads on mixed conventions such as volume `"1.500"` (`1.5`) paired with price `"150.000"` (`150,000`).
+- **Partial-import safety guard:** Flags formula errors (`#DIV/0!`, `#REF!`, `#VALUE!`), negative values, amount-only rows, and subtotal discrepancies; requires explicit user confirmation when valid and invalid rows appear together.
+- **Styled Excel export:** Generates formatted `.xlsx` workbooks (`xlsx-js-style`) with numeric cells, live row formulas (`=Volume*UnitPrice`), `SUM(...)` totals, and optional company letterhead.
 
-## Tema
+### Print-Ready A4 PDF Export
+- **Dynamic client-side generation:** Uses `jsPDF` + `jspdf-autotable` loaded via dynamic `import()` so PDF libraries stay out of the main application bundle.
+- **Consistent numbers:** Reuses the exact same calculation functions as the UI and Excel exporter, with repeating table headers, page-break guards, page numbering, optional company letterhead, and a 3-column signature block.
 
-Pilihan tema (Terang / Gelap / Ikuti sistem) tersimpan per perangkat di
-`localStorage` kunci `rab-theme`, tersedia di menu ikon tema pada header dan
-Settings. Skrip kecil di root layout menerapkan tema sebelum paint untuk
-mencegah kilatan tema; palette Light Gray/navy dan aksen Royal Blue ada di
-`src/app/globals.css`. PDF/Excel tetap memakai tampilan cetak terang dan tidak
-terpengaruh tema aplikasi.
+### Price Catalog (*Katalog Harga*) & AHSP (*Analisis Harga Satuan Pekerjaan*)
+- **Reusable Price Catalog:** Manage materials, labor rates (*Upah*), work items, and equipment with category filters and insert them directly into RAB items or AHSP analyses.
+- **AHSP Unit Price Analysis:** Build unit prices from **Material**, **Labor** (*Tenaga kerja*), and **Equipment** (*Peralatan*) components using user-entered coefficients and base prices. Calculations use **BigInt integer arithmetic** (coefficients scaled to micro-units `× 10^6`, prices in cents `× 100`) to avoid floating-point rounding drift.
+- **Price snapshot isolation:** Copying an item from the Price Catalog or AHSP into an RAB document stores a snapshot value rather than a live foreign-key price link — updating or deleting catalog/AHSP entries never alters historical RAB budgets.
 
-## Menyiapkan Supabase
+### Theme & Responsive UX
+- **Light, Dark, and System themes:** Persisted per device in `localStorage` (`rab-theme`) with a pre-paint initialization script in the root layout to prevent theme flicker. PDF and Excel exports always use a clean light print layout.
+- **Responsive layouts:** Adapts between desktop sidebar navigation and mobile drawer/card layouts.
 
-1. Buat project di [supabase.com](https://supabase.com).
-2. Buka **SQL Editor**:
-   - project baru → tempel dan jalankan [`supabase/schema.sql`](supabase/schema.sql);
-   - project yang sudah memiliki tabel → jalankan migration secara berurutan:
-     [`0002_auth_ownership.sql`](supabase/migrations/0002_auth_ownership.sql) →
-     [`0003_price_catalog.sql`](supabase/migrations/0003_price_catalog.sql) →
-     [`0004_ahsp.sql`](supabase/migrations/0004_ahsp.sql).
-3. Salin **Project URL** dan **publishable key** dari
-   *Project Settings → API Keys*, lalu isi `.env.local`:
+---
 
-   ```bash
-   NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
-   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
-   ```
+## Visual Tour
 
-   Hanya kunci publik yang dipakai — jangan pernah menaruh service role key di
-   aplikasi ini.
-4. Pastikan provider **Email** aktif di *Authentication → Providers*. Secara
-   bawaan Supabase meminta konfirmasi email: setelah mendaftar, pengguna harus
-   membuka tautan konfirmasi sebelum bisa masuk. Untuk pengujian cepat, matikan
-   *Confirm email* di *Authentication → Sign In / Providers*, atau buat pengguna
-   langsung dari *Authentication → Users* (sudah terkonfirmasi).
+All screenshots below were captured from a local instance running against isolated, synthetic Indonesian construction demo data.
 
-## Menjalankan aplikasi
+| Hierarchical RAB Editor (Light) | Hierarchical RAB Editor (Dark) |
+| :---: | :---: |
+| ![RAB Editor Light](docs/media/rab-editor-light.png) | ![RAB Editor Dark](docs/media/rab-editor-dark.png) |
+
+| AHSP Unit Price Analysis Editor | Price Catalog (*Katalog Harga*) |
+| :---: | :---: |
+| ![AHSP Editor](docs/media/ahsp-editor-light.png) | ![Price Catalog](docs/media/catalog-light.png) |
+
+<details>
+<summary><strong>Mobile Responsive View</strong></summary>
+<br />
+<p align="center">
+  <img src="docs/media/mobile-dashboard.png" alt="RAB Mini Mobile Dashboard" width="320" />
+</p>
+</details>
+
+---
+
+## Technology Stack
+
+| Layer | Technology |
+| --- | --- |
+| Framework | [Next.js 16](https://nextjs.org) (App Router, Turbopack, Cache Components) |
+| Language | TypeScript 5 |
+| UI & Styling | React 19, Tailwind CSS v4, [Base UI](https://base-ui.com) primitives, Lucide Icons, Sonner |
+| Backend & Auth | [Supabase](https://supabase.com) (`@supabase/supabase-js`) — Postgres, Email Auth, Row Level Security |
+| Document Export / Import | `jspdf`, `jspdf-autotable`, `xlsx-js-style` |
+| Testing & Quality | Node.js built-in test runner (`node:test`), ESLint 9, TypeScript compiler (`tsc`) |
+| Hosting | Vercel |
+
+---
+
+## Technical Architecture
+
+### Data Ownership & Security Boundaries
+
+Authentication gates in the UI (`AuthGate`) control user experience only. **PostgreSQL Row Level Security (RLS)** is the actual security boundary: without a valid authenticated Supabase session, all database queries are rejected by Postgres.
+
+```text
+auth.users (Supabase Auth)
+ ├── projects.user_id = auth.uid()
+ │    └── rab_documents (ownership inherited via EXISTS on projects)
+ │         └── rab_items (ownership inherited via EXISTS on rab_documents → projects)
+ ├── price_catalog.user_id = auth.uid()
+ └── ahsp_analyses.user_id = auth.uid()
+      └── ahsp_components (ownership inherited via EXISTS on ahsp_analyses)
+```
+
+- All 6 business tables enforce `SELECT`, `INSERT`, `UPDATE`, and `DELETE` RLS policies restricted to the `authenticated` role.
+- Child tables (`rab_documents`, `rab_items`, `ahsp_components`) verify parent ownership via `EXISTS (...)` in both `USING` and `WITH CHECK` clauses, preventing cross-account record reassignment.
+- Deleting a user or parent entity cascades cleanly via `ON DELETE CASCADE`.
+- The browser client (`src/lib/supabase/client.ts`) uses only the public Supabase URL and publishable key; service role credentials are never used in the web application.
+- Optional user profile and company letterhead metadata are stored per account in Supabase Auth `user_metadata` (`full_name`, `company`) with blank defaults.
+
+### Application Data Flow & Autosave Model
+
+1. **Session-first hydration:** `AuthProvider` restores the persisted Supabase session (`localStorage` key `rab-mini:auth`). `DataProvider` loads workspace data only after authentication succeeds and clears state immediately on sign-out.
+2. **Parallel workspace loading:** Projects, RAB documents, and work items are fetched in parallel with paginated queries (`src/lib/supabase/paginate.ts`), and derived metrics (item counts, document totals, project totals) are deterministically recomputed in memory.
+3. **Ordered write queue (`src/lib/save-queue.ts`):**
+   - Inline row edits apply optimistically and debounce for `500 ms` per item.
+   - Structural operations (add/delete) and document metadata updates are serialized so newer edits wait for in-flight requests and stale responses never overwrite newer revisions.
+   - Document duplication and comparison exports await pending writes for affected documents before reading snapshots.
+   - On `visibilitychange` / `pagehide`, the queue flushes pending edits immediately without waiting for debounce timers.
+
+### Repository Structure
+
+```text
+src/
+├── app/                 # Next.js App Router pages (/login, /register, /dashboard, /projects, /rab, /catalog, /ahsp, /settings)
+├── assets/branding/     # Astaworks brand logo sources and generated theme variants
+├── components/
+│   ├── ahsp/            # AHSP list, editor, and component dialogs
+│   ├── auth/            # AuthGate and email/password forms
+│   ├── catalog/         # Price catalog list and CRUD dialogs
+│   ├── dashboard/       # KPI summary, recent projects/documents, legacy migration banner
+│   ├── layout/          # AppShell, ProtectedShell, sidebar, header, theme menu, BrandMark
+│   ├── projects/        # Project table/cards, detail view, form dialog
+│   ├── providers/       # ThemeProvider, AuthProvider, DataProvider
+│   ├── rab/             # RAB list, ImportExcelDialog, CompareDocumentsDialog, DuplicateDocumentDialog, export buttons
+│   │   └── editor/      # RabEditor, DocumentHeader, WorkItemsTable, RabSummary, SaveStatus
+│   ├── settings/        # User profile, optional company letterhead, theme preferences
+│   ├── shared/          # Reusable UI states (PageHeader, StatCard, StatusBadge, EmptyState, ConfirmDialog)
+│   └── ui/              # Base UI primitives (Button, Card, Dialog, Input, Select, Table, …)
+├── hooks/               # useNow, use-rab-pdf-export, use-catalog, use-ahsp
+├── lib/                 # Pure domain logic (rab-calc, rab-hierarchy, rab-compare, duplicate-rab, ahsp, excel-import, rab-excel, rab-pdf, save-queue)
+│   ├── auth/            # Auth error message mapping
+│   └── supabase/        # Browser client, paginated CRUD modules, legacy localStorage migration
+└── types/               # Shared domain TypeScript interfaces
+
+supabase/
+├── schema.sql           # Complete schema, indexes, triggers, and RLS policies for fresh installs
+└── migrations/          # Incremental migrations (0002_auth_ownership → 0003_price_catalog → 0004_ahsp → 0005_rab_item_structure)
+
+scripts/
+├── test-excel-import.mjs  # Offline regression suite for Excel import parser & workbook round-trip (25 tests)
+├── autosave.test.mjs      # Offline regression suite for save queue, recovery, duplication, and compare flushes (21 tests)
+├── smoke-*.mjs            # Live Supabase smoke tests (CRUD, RLS isolation, catalog, AHSP, import)
+└── release/               # Operator backup, cleanup, verify-empty, and restore scripts for v1.0.0
+
+docs/
+├── media/                 # Portfolio screenshots (synthetic demo data)
+├── release-v1.0.0.md      # v1.0.0 backup, cleanup, restore, and deployment runbook
+└── release-v1.0.1.md      # v1.0.1 release notes (blank company defaults & favicon)
+```
+
+---
+
+## Local Development & Installation
+
+### Prerequisites
+- **Node.js 20.11+** and `npm`
+- A [Supabase](https://supabase.com) project with the **Email** auth provider enabled
+
+### 1. Clone and Install Dependencies
 
 ```bash
+git clone https://github.com/Skiidig/asta-rab.git
+cd asta-rab
 npm install
+```
+
+### 2. Set Up the Supabase Database
+
+Open the **SQL Editor** in your Supabase project:
+- **New project:** Run [`supabase/schema.sql`](supabase/schema.sql) once to create all tables, indexes, triggers, and RLS policies.
+- **Existing project (incremental upgrade):** Run the migrations in order:
+  1. [`supabase/migrations/0002_auth_ownership.sql`](supabase/migrations/0002_auth_ownership.sql)
+  2. [`supabase/migrations/0003_price_catalog.sql`](supabase/migrations/0003_price_catalog.sql)
+  3. [`supabase/migrations/0004_ahsp.sql`](supabase/migrations/0004_ahsp.sql)
+  4. [`supabase/migrations/0005_rab_item_structure.sql`](supabase/migrations/0005_rab_item_structure.sql)
+
+In **Authentication → Providers**, ensure **Email** is enabled. For quick local testing, you can disable *Confirm email* or create a confirmed user directly under **Authentication → Users**.
+
+### 3. Configure Environment Variables
+
+Create `.env.local` in the repository root using your Supabase **Project URL** and **Publishable Key** (*Project Settings → API Keys*):
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://<your-project-ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_<your-publishable-key>
+```
+
+> **Security note:** Only public client keys belong in `.env.local`. Never place a Supabase `service_role` key in `.env.local`, `NEXT_PUBLIC_*` variables, or version control.
+
+### 4. Run the Application
+
+```bash
 npm run dev
 ```
 
-Buka http://localhost:3000 — halaman `/` mengarah ke `/dashboard`, dan pengguna
-yang belum masuk akan dialihkan ke `/login`.
+Open [http://localhost:3000](http://localhost:3000). Unauthenticated visitors are redirected to `/login`.
 
-Perintah lain:
+Additional scripts:
 
 ```bash
-npm run build   # production build + type check
-npm run start   # jalankan hasil build
-npm run lint    # ESLint
+npm run build   # Production build + TypeScript check
+npm run start   # Start production server
+npm run lint    # Run ESLint
 ```
 
-## Autentikasi
+---
 
-| Halaman     | Isi                                                             |
-| ----------- | --------------------------------------------------------------- |
-| `/login`    | Masuk dengan email + password                                   |
-| `/register` | Daftar akun baru (email, password, ulangi password)             |
-| lainnya     | Dilindungi `AuthGate`; belum masuk → dialihkan ke `/login`       |
+## Testing & Quality Checks
 
-- **Sesi** disimpan `@supabase/supabase-js` di `localStorage` (kunci
-  `rab-mini:auth`) dan diperbarui otomatis, jadi tetap aktif setelah refresh.
-- **Keluar** ada di menu pengguna (kanan atas) → sesi dihapus, kembali ke
-  `/login`.
-- **Identitas** yang tampil di header diambil dari sesi (email pengguna), bukan
-  data statis.
-- **Batas keamanan sebenarnya adalah RLS**, bukan gerbang halaman. `AuthGate`
-  hanya mengatur UX; tanpa sesi valid, semua query tetap ditolak Postgres.
+### Offline Regression & Static Checks
 
-### Kepemilikan data
-
-```
-auth.users ──1:1──▶ projects.user_id
-                    └── rab_documents.project_id ──▶ rab_items.rab_id
-```
-
-- `projects.user_id` diisi otomatis dengan `auth.uid()` saat insert.
-- Policy `SELECT/INSERT/UPDATE/DELETE` hanya berlaku untuk role `authenticated`
-  dan mensyaratkan `user_id = auth.uid()`.
-- `rab_documents` dan `rab_items` mewarisi kepemilikan lewat `exists (...)` ke
-  proyek induknya, sehingga memindahkan dokumen ke proyek orang lain ditolak.
-- Menghapus pengguna atau proyek menghapus turunannya lewat `on delete cascade`.
-- Policy lama `dev full access` untuk `anon` dihapus oleh migration 0002.
-
-## Halaman
-
-| Route             | Isi                                                                     |
-| ----------------- | ----------------------------------------------------------------------- |
-| `/dashboard`      | Ringkasan KPI, proyek terbaru, dokumen terbaru, aksi cepat               |
-| `/projects`       | Daftar proyek dengan pencarian, filter status, tampilan tabel/kartu      |
-| `/projects/[id]`  | Detail proyek, daftar dokumen RAB, edit/hapus proyek                     |
-| `/rab`            | Daftar dokumen RAB dengan pencarian dan menu aksi                        |
-| `/rab/[id]`       | Editor RAB: judul, rincian pekerjaan, total otomatis, tombol Export PDF  |
-| `/catalog`        | Katalog harga: material/pekerjaan, kategori, satuan, harga satuan       |
-| `/ahsp`           | Analisis harga satuan pekerjaan: daftar analisis + pencarian/filter     |
-| `/ahsp/[id]`      | Editor AHSP: komponen material/tenaga kerja/peralatan + total           |
-| `/settings`       | Profil pengguna, identitas perusahaan (opsional), tema tampilan          |
-
-## Katalog Harga
-
-Menyimpan material dan pekerjaan beserta satuan dan harga satuannya, lalu
-memakainya langsung di editor RAB.
-
-- **Halaman** `/catalog`: daftar item, pencarian nama, filter kategori,
-  tambah/edit/hapus (dengan konfirmasi), serta kondisi loading/error/kosong.
-- **Kategori** bawaan: Material, Pekerjaan, Upah, Alat, Lainnya. Kategori
-  disimpan sebagai teks, jadi menambah kategori cukup dengan menambah satu
-  entri di `CATALOG_CATEGORIES` ([catalog.ts](src/lib/catalog.ts)) — tanpa
-  migration baru. Kategori lain yang sudah ada di data ikut muncul di filter.
-- **Dari editor RAB**: tombol "Pilih dari Katalog" (di bawah tabel maupun pada
-  kondisi kosong) membuka dialog pencarian + filter; item terpilih langsung
-  mengisi uraian, satuan, dan harga satuan, lalu pengguna mengisi volume
-  seperti biasa. Menambah item manual tetap tersedia.
-- **Snapshot harga (penting)**: `price_catalog` **tidak** berelasi ke
-  `rab_items`. Saat dipilih, nama/satuan/harga **disalin** ke baris RAB. Jadi:
-  mengubah harga katalog tidak mengubah RAB lama, menghapus item katalog tidak
-  menghapus item RAB, dan harga di RAB tetap bisa diedit manual tanpa
-  menyentuh katalog.
-- **Kepemilikan**: `price_catalog.user_id` diisi otomatis `auth.uid()` dan RLS
-  membatasi SELECT/INSERT/UPDATE/DELETE ke pemiliknya; role `anon` tidak
-  diberi hak akses tabel.
-
-## Excel Import & Export
-
-Untuk pengguna yang biasa menyusun RAB di Excel.
-
-**Export** (tombol "Export Excel" di header editor RAB):
-- Berkas `.xlsx` berisi kop, identitas proyek (nama, klien, lokasi, nomor,
-  tanggal), tabel No/Uraian/Volume/Satuan/Harga Satuan/Jumlah Harga, dan baris
-  TOTAL.
-- Nilai uang & volume ditulis sebagai **angka** (`t: "n"`), bukan teks, dan
-  setiap baris memakai rumus `=Volume*Harga Satuan`; total memakai `SUM(...)`.
-- Header berwarna, border, format ribuan, lebar kolom, dan judul ter-merge
-  (memakai `xlsx-js-style`).
-- Nama berkas: `RAB_<Nama_Proyek>_<Tahun>.xlsx`.
-- RAB kosong tetap bisa diekspor (header + total 0).
-
-**Import** (tombol "Import Excel" di halaman RAB):
-1. Pilih proyek tujuan, berkas `.xlsx`/`.xls`, dan nama dokumen.
-2. Pilih sheet, baris header, **pemetaan kolom** (dikenali otomatis dari variasi
-   nama umum: Uraian/Nama Pekerjaan/Deskripsi, Volume/Qty/Kuantitas,
-   Satuan/Unit, Harga Satuan/Harga, Jumlah Harga/Total), dan opsional **format
-   angka teks terpisah** untuk kolom Volume vs Harga & Jumlah + pratinjau 5
-   baris.
-3. Ringkasan validasi: item valid, struktur terbaca, baris ambigu, peringatan
-   subtotal/total, baris bermasalah (dengan alasan per baris, dapat diperiksa
-   meski 0 item valid), dan catatan (mis. satuan kustom). Bila item valid dan
-   baris bermasalah muncul bersamaan, pengguna wajib mengonfirmasi impor parsial
-   secara eksplisit sebelum melanjutkan.
-4. Konfirmasi → dibuat **dokumen RAB baru** beserta itemnya; dokumen lama tidak
-   pernah ditimpa. Bila penyimpanan item gagal di tengah jalan, aplikasi
-   berusaha menghapus dokumen yang baru dibuat (*best-effort cleanup* di klien);
-   karena bukan transaksi database atomik, apabila proses pembersihan itu ikut
-   gagal (mis. koneksi terputus), dokumen baru yang kosong/parsial dapat
-   tertinggal dan perlu dihapus manual.
-
-Aturan validasi ([excel-import.ts](src/lib/excel-import.ts)):
-- Uraian kosong, volume/harga kosong/negatif/ambigu/tidak valid, baris yang
-  hanya mengisi `Jumlah Harga` tanpa volume dan harga satuan, atau sel error
-  rumus Excel (`#DIV/0!`, `#REF!`, `#VALUE!`) → baris bermasalah (tidak diimpor
-  dan tidak pernah berubah menjadi judul atau merusak hierarki item berikutnya).
-- Baris kosong dan baris total/subtotal dilewati dari daftar item.
-- Selisih subtotal/total file vs hitungan item — termasuk nilai moneter
-  subtotal/total yang ambigu, negatif, atau tidak terbaca — ditampilkan sebagai
-  peringatan.
-- **Struktur dipertahankan**: baris judul diklasifikasikan GROUP → SUBGROUP →
-  ITEM GROUP; item menyimpan `group_name`/`subgroup_name`/`item_group_name` +
-  `sort_order` (nomor baris Excel). Judul struktural (`I`, `A`, `A.`, `A.1`)
-  yang menaruh `-` pada kolom volume/harga kosong tetap diperlakukan sebagai
-  judul, sedangkan percobaan baris item bergaris datar atau tanpa angka valid
-  tetap dilaporkan sebagai baris bermasalah. Klasifikasi mengikuti urutan baris,
-  sehingga kode kelompok yang dipakai ulang (mis. `A` dua kali) tetap menjadi
-  kelompok baru.
-- **Koreksi sebelum impor**: judul tanpa item ditandai *ambigu* dan dapat
-  diubah klasifikasinya (Group / Subgroup / Item group / Catatan) di langkah
-  pratinjau; total dan struktur dihitung ulang saat koreksi.
-- **Header**: mendukung header berspasi (`U R A I A N   P E K E R J A A N`) dan
-  header dua baris (`Harga Sat` + `(Rp)`); pemetaan manual tetap tersedia.
-- **Keterbatasan**: hidden rows/columns tidak dideteksi (library tidak
-  mengekspos metadatanya); subjudul tambahan bertanda `-` tidak disimpan
-  sebagai baris, tetapi item di bawahnya tetap masuk ke kelompoknya; baris
-  dengan harga berupa teks (mis. "Supply by owner") dilaporkan sebagai baris
-  bermasalah, bukan diimpor.
-- Satuan kosong → memakai `unit` dengan catatan; satuan kustom (mis. `m'`,
-  `Point`) dipertahankan apa adanya dengan catatan.
-- **Parsing angka ketat & terpisah per kolom**:
-  - Sel angka Excel (`t: "n"`) selalu dibaca sesuai nilai numerik aslinya, tidak
-    terpengaruh pilihan format teks.
-  - Format teks tak ambigu diterima otomatis: `1.234,56`, `1,234.56`,
-    `1.234.567`, `1,234,567`, desimal selain 3 digit (`2,5`, `2.5`, `1000.234`),
-    desimal berawalan nol tunggal (`0.500`, `0,500`, `0.234`, `0,234` — berlaku
-    di semua mode termasuk `Indonesia` dan `Internasional` karena nol tidak
-    pernah menjadi grup ribuan), serta notasi rupiah Indonesia (`Rp 150.000,-`
-    → `150000`).
-  - Teks dengan pemisah tunggal + 3 digit (`"1.500"`, `"1,234"`, `"150.000"`)
-    **tidak pernah ditebak diam-diam** pada mode bawaan `Otomatis (ketat)` dan
-    ditandai ambigu; pengguna dapat memilih format teks secara terpisah untuk
-    **Volume** dan **Harga & Jumlah** (`Otomatis (ketat)` / `Indonesia` /
-    `Internasional`), sehingga campuran seperti Volume `"1.500"` (= `1,5`) dan
-    Harga `"150.000"` (= `150.000`) dapat diimpor secara akurat tanpa mengubah
-    workbook.
-  - Nilai negatif, `NaN`, `Infinity`, teks campur huruf (`"10 m2"`, `"abc12"`),
-    dan error rumus ditolak.
-- "Jumlah Harga" dihitung ulang dari volume × harga satuan.
-- Batas: berkas 5 MB, 1.000 baris per import, sheet dibaca maksimal 5.000 baris.
-
-## AHSP (Analisis Harga Satuan Pekerjaan)
-
-Menyusun harga satuan pekerjaan dari komponen material, tenaga kerja, dan
-peralatan. **Tidak ada koefisien atau harga bawaan** — seluruh angka diisi
-pengguna; aplikasi tidak mengklaim angka sebagai standar resmi.
-
-- **Halaman** `/ahsp`: daftar analisis, pencarian nama pekerjaan, filter
-  kategori (Persiapan … Lainnya), tambah/edit/hapus dengan konfirmasi.
-- **Editor** `/ahsp/[id]`: informasi pekerjaan (nama, kategori, satuan,
-  deskripsi) + komponen per kelompok dengan subtotal tiap kelompok dan total.
-- **Rumus** ([ahsp.ts](src/lib/ahsp.ts)): `Jumlah biaya = koefisien × harga
-  dasar`; `Total = Σ jumlah biaya`. Perhitungan memakai bilangan bulat (koefisien
-  dalam mikro ×1e6, harga dalam sen ×100) sehingga tidak ada galat floating
-  point; total = penjumlahan sen yang eksak.
-- **Dari katalog**: tombol "Pilih dari Katalog" mengisi nama, satuan, dan harga
-  dasar sebagai *snapshot*; koefisien tetap diisi pengguna. Komponen manual
-  selalu tersedia.
-- **Snapshot**: `ahsp_components.catalog_item_id` hanyalah referensi informatif
-  dengan `on delete set null` — menghapus item katalog tidak menghapus komponen,
-  dan perubahan harga katalog tidak mengubah analisis.
-- **Ke RAB**: di editor RAB tersedia "Pilih dari AHSP"; harga satuan = total
-  analisis saat dipilih, lalu disalin ke `rab_items`. Perubahan analisis
-  berikutnya tidak mengubah item RAB tersebut.
-- **Kepemilikan**: `ahsp_analyses.user_id` diisi otomatis `auth.uid()`; komponen
-  mengikuti kepemilikan analisisnya lewat `EXISTS`. Role `anon` tidak diberi hak
-  akses tabel.
-
-## Ekspor PDF
-
-Dari editor RAB atau menu aksi pada daftar RAB, dokumen dapat diunduh sebagai
-PDF A4 siap cetak.
-
-- **Library:** [`jspdf`](https://github.com/parallax/jsPDF) +
-  [`jspdf-autotable`](https://github.com/simonbengtsson/jsPDF-AutoTable), dimuat
-  dinamis (`import()`) sehingga tidak masuk ke bundel utama.
-- **Isi dokumen:** kop identitas perusahaan (opsional; baris nama/kontak yang
-  kosong tidak dicetak), judul "RENCANA ANGGARAN BIAYA", nama proyek,
-  klien, lokasi, nomor & tanggal dokumen, tabel item (No., Uraian, Volume,
-  Satuan, Harga Satuan, Jumlah Harga), rekapitulasi total, dan blok tanda
-  tangan tiga kolom.
-- **Perhitungan** memakai fungsi yang sama dengan UI (`calculateItemAmount`,
-  `calculateRabTotal`), jadi angka PDF identik dengan yang tampil di aplikasi.
-- **Nama berkas:** `RAB_<Nama_Proyek>_<Tahun>.pdf`.
-- **Tata letak:** header tabel berulang di setiap halaman, baris tidak dipotong
-  (`rowPageBreak: "avoid"`), rekap + tanda tangan dijaga agar tidak terpisah,
-  serta footer "Halaman X dari Y".
-- **Batas panjang:** uraian > 900 karakter dan nama proyek/klien/lokasi > 160
-  karakter dipotong dengan elipsis agar tidak meluber keluar halaman; data
-  aslinya tidak berubah di database.
-- **Angka:** format Indonesia (pemisah ribuan titik, desimal koma). Nilai uang
-  menampilkan sen hanya bila hasil kali volume × harga memang pecahan, sehingga
-  jumlah baris selalu sama dengan total yang tercetak.
-- **Data & keamanan:** PDF dibuat dari data yang sudah dimuat lewat RLS, tanpa
-  query tambahan dan tanpa service role key.
-
-## Struktur folder
-
-```
-src/
-├── app/                     # Route App Router (satu layout per halaman)
-│   ├── login/               # Halaman masuk
-│   ├── register/            # Halaman daftar
-│   ├── dashboard/
-│   ├── projects/
-│   ├── rab/
-│   ├── settings/
-│   ├── globals.css          # Design tokens & base styles
-│   └── layout.tsx           # Root layout: font, ThemeProvider, AuthProvider, DataProvider, toaster
-├── components/
-│   ├── auth/                # AuthGate, AuthForm
-│   ├── ahsp/                # AhspView, AhspEditor, AhspFormDialog, AhspComponentDialog
-│   ├── catalog/             # CatalogView, CatalogFormDialog
-│   ├── layout/              # AppShell, ProtectedShell, AppSidebar, AppHeader, ThemeMenu, Logo, BrandMark
-│   ├── providers/           # ThemeProvider, AuthProvider (sesi), DataProvider (data + sinkronisasi)
-│   ├── shared/              # PageHeader, StatCard, StatusBadge, EmptyState, DataError, …
-│   ├── projects/            # ProjectTable, ProjectCard, ProjectsView, ProjectFormDialog
-│   ├── rab/                 # RabTable, RabView, RabDocumentDialog, ExportRabButton, ExportExcelButton, CatalogPickerDialog, AhspPickerDialog, ImportExcelDialog
-│   │   └── editor/          # RabEditor, DocumentHeader, WorkItemsTable, RabSummary
-│   ├── settings/            # SettingsView
-│   ├── dashboard/           # DashboardView, MigrationBanner, TodayLabel
-│   └── ui/                  # Primitives ala shadcn/ui (Button, Card, Dialog, Select, …)
-├── hooks/                   # useNow, use-rab-pdf-export, use-catalog, use-ahsp
-├── lib/
-│   ├── auth/messages.ts     # Terjemahan pesan error Supabase Auth
-│   ├── supabase/
-│   │   ├── client.ts        # Klien browser (sesi persisten, publishable key saja)
-│   │   ├── data.ts          # Query + CRUD + pemetaan baris → tipe domain
-│   │   ├── catalog.ts       # CRUD katalog harga (price_catalog)
-│   │   ├── ahsp.ts          # CRUD analisis + komponen AHSP
-│   │   └── migrate.ts       # Migrasi snapshot localStorage lama → Supabase
-│   ├── rab-pdf.ts           # Penyusun dokumen PDF RAB (A4, jsPDF + autotable)
-│   ├── rab-excel.ts         # Ekspor RAB ke .xlsx (xlsx-js-style)
-│   ├── excel-import.ts      # Baca berkas, deteksi header, pemetaan kolom, validasi
-│   ├── catalog.ts           # Konstanta & helper katalog (filter, kategori, snapshot)
-│   ├── ahsp.ts              # Konstanta, rumus AHSP (bilangan bulat), filter, snapshot
-│   ├── legacy-migration.ts  # Pembacaan snapshot localStorage lama (read-only)
-│   ├── rab-calc.ts          # Perhitungan RAB & parsing angka (pure)
-│   ├── status.ts            # Status proyek + metadata tampilan
-│   ├── profile.ts           # Default + resolver identitas pengguna/perusahaan
-│   ├── format.ts            # Format IDR, tanggal, waktu relatif
-│   ├── navigation.ts        # Konfigurasi menu sidebar
-│   └── utils.ts             # cn() helper
-└── types/                   # Tipe domain (Project, RabDocument, RabWorkItem)
-
-supabase/
-├── schema.sql               # Skema lengkap untuk project baru (termasuk RLS)
-└── migrations/
-    ├── 0002_auth_ownership.sql   # Kepemilikan + RLS untuk project yang sudah ada
-    ├── 0003_price_catalog.sql    # Tabel katalog harga + RLS
-    ├── 0004_ahsp.sql             # Tabel AHSP (analisis + komponen) + RLS
-    └── 0005_rab_item_structure.sql  # Kolom hierarki item RAB (hasil import Excel)
-
-scripts/
-├── smoke-crud.mjs           # Uji CRUD end-to-end (butuh akun terkonfirmasi bila RLS aktif)
-├── smoke-auth-rls.mjs       # Uji isolasi data antar pengguna
-├── smoke-catalog.mjs        # Uji CRUD katalog, isolasi, dan snapshot harga
-├── smoke-ahsp.mjs           # Uji CRUD AHSP, isolasi, snapshot katalog & RAB
-├── smoke-import.mjs         # Uji jalur DB import Excel (dokumen baru, batch, RLS)
-├── test-excel-import.mjs    # Uji regresi parser, klasifikasi, dan workbook Excel
-└── autosave.test.mjs        # Uji regresi antrean, pemulihan, dan snapshot autosave
-```
-
-## Alur data
-
-- `AuthProvider` memulihkan sesi lebih dulu; `DataProvider` hanya memuat data
-  setelah ada sesi, dan mengosongkan state saat sesi berakhir.
-- Seluruh workspace dimuat sekali lewat tiga query paralel (`projects`,
-  `rab_documents`, `rab_items`); RLS memfilter hasilnya sesuai pemilik.
-- Nilai turunan — jumlah item, total per dokumen, total per proyek — selalu
-  dihitung ulang dari data mentah (`recomputeWorkspace`).
-- Edit volume/harga memakai *optimistic update* dengan debounce 500 ms per baris.
-  Perubahan metadata masuk ke antrean saat dikirim dari form atau saat edit
-  judul dikonfirmasi. Saat halaman disembunyikan, antrean mencoba mengirim item
-  dan metadata tanpa menunggu debounce. Patch terbaru menunggu respons dari
-  permintaan yang sedang berjalan. Metadata yang gagal mendapat paling banyak
-  satu percobaan otomatis selama masih ada waktu untuk menjalankan kode.
-- Antrean ada di memori. Penutupan paksa, tab yang dibekukan, atau koneksi yang
-  putus dapat menyebabkan perubahan yang belum dikonfirmasi hilang. Ekspor
-  perbandingan dan duplikasi menunggu penyimpanan. Jika penyimpanan gagal,
-  buka dokumen yang disebut di pesan dan pilih **Coba lagi** sebelum mengulang.
-- Menghapus proyek menghapus dokumen dan itemnya lewat `on delete cascade`.
-
-`sendBeacon()` memakai `POST` dan tidak dapat mengatur header autentikasi
-Supabase yang dipakai permintaan `PATCH`. `fetch` dengan `keepalive` dapat
-mempertahankan permintaan yang sudah dimulai dalam batas ukuran browser,
-tetapi tidak memastikan JavaScript sempat mengirim patch berikutnya setelah
-respons sebelumnya. Tindak lanjut untuk penutupan paksa adalah antrean lokal
-yang persisten per akun dan dokumen, dengan replay pada sesi berikutnya serta
-revisi di server untuk menolak patch lama dan kunci idempotensi untuk replay.
-
-## Menguji
-
-Jalankan uji regresi dari root repositori dengan Node.js 20.11 atau lebih baru.
-Kedua suite memakai `node:test` dan TypeScript yang sudah terpasang, tanpa
-browser, jaringan, atau kredensial Supabase.
+Run directly from the repository root (requires Node.js 20.11+, no Supabase credentials or browser needed):
 
 ```bash
 node --test scripts/test-excel-import.mjs
 node --test scripts/autosave.test.mjs
 npm run lint
+npx tsc --noEmit
 npm run build
 ```
 
-Uji smoke memakai Supabase yang sudah dikonfigurasi.
+- `scripts/test-excel-import.mjs` — 25 tests covering numeric locale parsing, mixed Volume/Price conventions, hierarchical row classification, formula-error rejection, partial-import guards, and Excel export/import round-trips.
+- `scripts/autosave.test.mjs` — 21 tests covering ordered writes, coalescing, idempotent add retries, page-hide flushes, and snapshot consistency for duplication and comparison exports.
 
-```bash
-node scripts/smoke-crud.mjs        # CRUD end-to-end
-node scripts/smoke-auth-rls.mjs    # isolasi data antar pengguna
-node scripts/smoke-catalog.mjs     # CRUD katalog + isolasi + snapshot harga
-node scripts/smoke-ahsp.mjs        # CRUD AHSP + isolasi + snapshot katalog/RAB
-node scripts/smoke-import.mjs      # jalur DB import Excel (dokumen baru + RLS)
-```
+### Live Supabase Smoke Tests
 
-Setelah RLS aktif, `smoke-crud.mjs` juga memerlukan sesi terkonfirmasi:
+To verify CRUD and cross-user RLS isolation against a configured Supabase test project, provide confirmed test account credentials via shell environment variables (never commit credentials):
 
 ```powershell
-$env:RLS_EMAIL_A="a@contoh.com"; $env:RLS_PASSWORD_A="rahasia1"
+# PowerShell example (use dedicated test accounts)
+$env:RLS_EMAIL_A="user-a@example.com"; $env:RLS_PASSWORD_A="<test-password-a>"
+$env:RLS_EMAIL_B="user-b@example.com"; $env:RLS_PASSWORD_B="<test-password-b>"
+
 node scripts/smoke-crud.mjs
-```
-
-`smoke-auth-rls.mjs` memerlukan **dua** akun terkonfirmasi:
-
-```powershell
-$env:RLS_EMAIL_A="a@contoh.com"; $env:RLS_PASSWORD_A="rahasia1"
-$env:RLS_EMAIL_B="b@contoh.com"; $env:RLS_PASSWORD_B="rahasia2"
 node scripts/smoke-auth-rls.mjs
+node scripts/smoke-catalog.mjs
+node scripts/smoke-ahsp.mjs
+node scripts/smoke-import.mjs
 ```
 
-## Catatan implementasi
+---
 
-- **Design tokens** ada di `@theme` pada `src/app/globals.css`. Warna baru
-  sebaiknya memakai token yang sudah ada agar tampilan tetap konsisten.
-- **Cache Components** aktif (bawaan Next.js 16). Hindari `new Date()` saat
-  render server; gunakan hook `useNow()` untuk waktu relatif.
-- **Metadata halaman detail** bersifat statis karena judul proyek/dokumen hanya
-  diketahui klien setelah data dimuat.
-- **Ekspor Excel** tersedia dari editor/daftar RAB; PDF dan Excel memakai
-  perhitungan yang sama.
-- **Profil pengguna dan identitas perusahaan** disimpan di `user_metadata`
-  Supabase Auth (`full_name`, `company`); tidak ada tabel profil terpisah.
-  Identitas perusahaan bersifat opsional dan default-nya kosong, jadi aplikasi
-  tidak pernah menampilkan contoh perusahaan sebagai data pengguna.
-- **Data lama tanpa pemilik** (`user_id IS NULL`) tidak terlihat oleh pengguna
-  mana pun setelah migration 0002. File migration memuat perintah opsional
-  (dikomentari) untuk menghapus atau mengklaimnya.
+## Deployment & Release Documentation
+
+RAB Mini deploys as a standard Next.js application (currently hosted on **Vercel** via Git integration on `main`).
+
+- Configure `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in the hosting environment.
+- Configure Supabase **Authentication → URL Configuration** (`Site URL` and `Redirect URLs`) to match the production domain (`/login`, `/register`).
+- See [`docs/release-v1.0.0.md`](docs/release-v1.0.0.md) for the operator backup, cleanup, restore, and deployment runbook.
+- See [`docs/release-v1.0.1.md`](docs/release-v1.0.1.md) for v1.0.1 release notes (blank company identity defaults and Astaworks favicon).
+
+> **Version note:** `package.json` is currently at `1.0.1`. Commits on `main` after `v1.0.1` include RAB editor performance improvements, Excel import validation hardening, and ordered autosave recovery.
+
+---
+
+## Known Limitations
+
+- **In-memory autosave queue:** Pending edits live in browser memory (`SaveQueue`). A sudden browser crash, forced tab kill, or prolonged offline disconnect before requests settle can drop unacknowledged edits. Persistent per-account local replay with server-side revision checks is a planned future architectural improvement.
+- **Non-atomic Excel import cleanup:** Importing an Excel file creates the RAB document and then inserts work items in batches from the client. If an item batch fails mid-way, the app performs best-effort cleanup to delete the new document; if cleanup also fails (e.g., lost connection), an empty or partial document may remain and require manual deletion.
+- **Excel hidden rows/columns:** `xlsx-js-style` does not expose hidden row/column visibility metadata, so hidden rows in source spreadsheets are read along with visible rows.
+- **Import limits:** Excel uploads are capped at 5 MB, 1,000 imported items per document, and 5,000 scanned rows per worksheet.
+- **No bundled official AHSP coefficients:** By design, RAB Mini does not ship pre-filled SNI or government AHSP coefficients; users enter and maintain their own coefficients and unit prices.
+
+---
+
+## Credits & Third-Party Attribution
+
+- **Frameworks & UI:** [Next.js](https://nextjs.org), [React](https://react.dev), [Tailwind CSS](https://tailwindcss.com), [Base UI](https://base-ui.com), [Lucide Icons](https://lucide.dev), [Sonner](https://sonner.emilkowal.ski)
+- **Typography:** [Geist & Geist Mono](https://vercel.com/font) loaded via `next/font/google`
+- **Backend:** [Supabase](https://supabase.com) (`@supabase/supabase-js`)
+- **PDF & Excel:** [jsPDF](https://github.com/parallax/jsPDF), [jsPDF-AutoTable](https://github.com/simonbengtsson/jsPDF-AutoTable), [xlsx-js-style](https://github.com/gitbrent/xlsx-js-style)
+- **Branding Assets:** Astaworks logo and favicon assets in `src/assets/branding/` and `src/app/` belong to the repository owner.
+
+---
+
+## License
+
+**All Rights Reserved — No Open-Source License Granted.**
+
+This repository is publicly visible for portfolio and code-review purposes (`"private": true` in `package.json`, no `LICENSE` file). Unless explicit permission or an open-source license is added by the copyright holder, redistribution, modification, or commercial use is not permitted.
